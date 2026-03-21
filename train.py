@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader, Dataset
 from torch.optim.lr_scheduler import LinearLR, OneCycleLR, ExponentialLR
 from torch.optim import AdamW
 import argparse
+import os
 
 from tqdm import tqdm#
 import numpy as np
@@ -23,7 +24,7 @@ def set_seed(seed):
 def main(args):
     wandb.init(
         project='probing_train_gemma2b_final_in3', # 'probing_train_cot_7b_v1'
-        entity='ingeol',
+        entity='weikai1-university-of-michigan',
         name=f"{args.train_ds_ratio}_{args.model_id.split('/')[1]}_linear999_{args.method}_{args.layer}_{args.batch_size}"
     )
 
@@ -31,9 +32,9 @@ def main(args):
     train_ratio = args.train_ds_ratio
     model_id = args.model_id
     device = args.device
-    model = HookedTransformer.from_pretrained(model_id, device = device, cache_dir="/root/data/")
+    model = HookedTransformer.from_pretrained(model_id, device = device, cache_dir="./cache/")
     
-    train_data_path = 'dataset/2b/retrieval_qa_gemma-2b_all_train_in3_.csv'
+    train_data_path = 'dataset/2b/retrieval_qa_gemma-2b_all_train_in3_balanced.csv'
     train_df=pd.read_csv(train_data_path).dropna(axis=0).reset_index(drop=True)
     train_df = train_df[:int(len(train_df) * train_ratio)]
     dev_data_path ='dataset/2b/retrieval_qa_gemma-2b_all_zeroshot_test_500.csv'
@@ -341,8 +342,12 @@ def main(args):
         print(f'training info: layer:{args.layer}, method: {args.method}, lr: {args.lr}, batch: {args.batch_size}')
 
 
-        torch.save(probe_bi_l16_resid_mid.to('cpu').state_dict(), f"pckpt/_3/in3_{train_ratio}_{args.model_id.split('/')[1]}_{method}_{num_classes}_l{layer}_resid_mid_ep{epoch}.pt")
-        torch.save(probe_bi_l16_resid_post.to('cpu').state_dict(), f"ckpt/_3/in3_{train_ratio}_{args.model_id.split('/')[1]}_{method}_{num_classes}_l{layer}_resid_post_ep{epoch}.pt")
+        os.makedirs("pckpt/_3", exist_ok=True)
+        os.makedirs("ckpt/_3", exist_ok=True)
+        mid_ckpt_path = f"pckpt/_3/in3_{train_ratio}_{args.model_id.split('/')[1]}_{method}_{num_classes}_l{layer}_resid_mid_ep{epoch}.pt"
+        post_ckpt_path = f"ckpt/_3/in3_{train_ratio}_{args.model_id.split('/')[1]}_{method}_{num_classes}_l{layer}_resid_post_ep{epoch}.pt"
+        torch.save(probe_bi_l16_resid_mid.to('cpu').state_dict(), mid_ckpt_path)
+        torch.save(probe_bi_l16_resid_post.to('cpu').state_dict(), post_ckpt_path)
 
         if max_acc2 < total_acc2:
             max_acc2 = total_acc2

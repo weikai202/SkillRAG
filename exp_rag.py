@@ -4,6 +4,8 @@ from argparse import Namespace
 
 import time
 import json
+import os
+import numpy as np
 from tqdm import tqdm
 from functools import partial
 
@@ -23,11 +25,12 @@ from transformer_lens.utilities import devices
 import torch
 from torch.utils.data import DataLoader, Dataset
 
-from metrics.metrcis import EmF1Metric, SupportEmF1Metric 
+from metrics.metrics import EmF1Metric, SupportEmF1Metric
 
 from utils import AttnWeightRAG, FixLengthRAG, StopOnPunctuationWithLogit, Config_Maker, preprocessing, batch_topk_sim
-from utils import load_prober_cfg_gemma_2b, load_prober_models, return_prober_logit_gemma_2b, evaluator
+from utils import load_prober_cfg_gemma_2b, load_prober_models, return_prober_logit_gemma_2b, evaluator, normalize_answer
 from prompts import inst_prompt, cot_prompt, retr_qa, retr_qa_cot2
+from prompts import skillrag_diagnosis_prompt, skillrag_router_prompt, skillrag_rewrite_prompt
 
 from typing import Dict, List, NamedTuple, Optional, Tuple, Union, cast, overload
 from typing_extensions import Literal
@@ -245,7 +248,7 @@ def main(args):
         print('dense retrieval loading...')
         model_retr_id = 'facebook/contriever-msmarco'
         model_retr = SentenceTransformer(model_retr_id)
-        index = faiss.read_index(f'index/dense_index/contriever_{dataset_name}_2.bin') #
+        index = faiss.read_index(f'raw_data/dense_index/contriever_{dataset_name}_2.bin') #
     print('finish!!')
     print('*'*70)
     if (dataset_name =='hotpotqa') and (tr_or_dev=='dev'): path = f'raw_data/hotpotqa/hotpot_{tr_or_dev}_distractor_v1.json'
@@ -259,17 +262,17 @@ def main(args):
     if (args.dataset_name == 'hotpotqa') or (args.dataset_name == '2wikimultihopqa') or (args.dataset_name == 'musique') or (args.dataset_name == 'iirc'):
         metric = SupportEmF1Metric()    
         answer_name = 'answer'
-    else: 
+    else:
         metric = EmF1Metric()
         answer_name = 'answers'
     
     dataset = []
     if dataset_name =='musique':
-        with open(path, 'r', encoding='utf-8') as f:
+        with open(path, 'r', encoding='utf-8-sig') as f:
             for line in f:
                 dataset.append(json.loads(line.strip()))
     else:
-        with open(path) as f:  #문제
+        with open(path, 'r', encoding='utf-8-sig') as f:  #문제
             js = json.load(f) 
         if dataset_name == 'iirc':
             for tmp in tqdm(js):
@@ -295,7 +298,7 @@ def main(args):
                     })                
         else: dataset = js
     if is_sparse: pass
-    else: corpus = pd.read_csv(f'raw_data/documents/{dataset_name}_index_2.csv') 
+    else: corpus = pd.read_csv(f'raw_data/{dataset_name}_index_2.csv') 
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -312,6 +315,26 @@ def main(args):
             probers = load_prober_models(_ds, cfg_list)
             layer_configs = cfg_list
             
+        cache = {}
+
+        def hook_fn(activations, hook, layer):
+            if layer not in cache:
+                cache[layer] = []
+            cache[layer].append(activations.detach().cpu())
+            return activations
+
+        def add_layer_hook(model, layer_name):
+            hook = partial(hook_fn, layer=layer_name)
+            model.add_hook(layer_name, hook)
+
+        for prober_cfg in layer_configs:
+            layer_name = f'blocks.{prober_cfg.layer}.hook_{prober_cfg.position}'
+            add_layer_hook(model, layer_name)
+    if retr_method == 'skillrag':
+        if 'google/gemma-2b' == model_id:
+            cfg_list = load_prober_cfg_gemma_2b(model, Config_Maker, position, device, 6,17, 2)
+            probers = load_prober_models(_ds, cfg_list)
+            layer_configs = cfg_list
         cache = {}
 
         def hook_fn(activations, hook, layer):
@@ -387,8 +410,70 @@ def main(args):
             logit=prober(input)
         # import pdb;pdb.set_trace()
         return logit
+    
+    def extract_pred_for_eval(pred):
+        if args.is_cot:
+            try:
+                pred = pred.split('\n\n')[4]
+            except:
+                pred = pred
+            if len(pred.split('\n')) > 7:
+                new_pred = '\n'.join(pred.split('\n')[8:])
+            else:
+                new_pred = '\n'.join(pred.split('\n')[1:])
+            return new_pred.replace('</s>','').replace('<eos>','').replace('Answer:','').strip()
+        else:
+            try:
+                new_pred = pred.split('\n\n')[2]
+            except:
+                new_pred = pred
+            return new_pred.replace('</s>','').replace('<eos>','').replace('Answer:','').strip()
+    
+    def prober_need_retrieval():
+        if 'google/gemma-2b' == model_id:
+            logits = return_prober_logit_gemma_2b(return_mean_output, cfg_list, probers)
+            for_set_threshold = torch.zeros_like(logits[0].squeeze())
+            for num in range(args.ablation, len(logits)):
+                for_set_threshold += (softmax_f(logits[num])).squeeze()
+        else:
+            assert 'model id error...'
+
+        if for_set_threshold[0].item() + threshold < for_set_threshold[1].item():
+            return 0, for_set_threshold
+        return 1, for_set_threshold
+
+    def diagnose_failure(question, reasoning_answer):
+        diagnosis_prompt = skillrag_diagnosis_prompt(question, reasoning_answer)
+        with torch.no_grad():
+            diagnosis_out = model.generate(tokenizer(diagnosis_prompt, return_tensors='pt')['input_ids'].to(device), do_sample=False, max_new_tokens=48)
+        diagnosis_text = model.to_string(diagnosis_out)[0]
+        return diagnosis_text.replace('</s>','').replace('<eos>','').strip()
+
+    def choose_skill(question, reasoning_answer):
+        diagnosis = diagnose_failure(question, reasoning_answer)
+        router_prompt = skillrag_router_prompt(question, reasoning_answer, diagnosis)
+        with torch.no_grad():
+            route_out = model.generate(tokenizer(router_prompt, return_tensors='pt')['input_ids'].to(device), do_sample=False, max_new_tokens=20)
+        route_text = model.to_string(route_out)[0].lower()
+        if 'multi_hop_missing' in route_text:
+            return 'multi_hop_missing', diagnosis
+        if 'evidence_not_used' in route_text:
+            return 'evidence_not_used', diagnosis
+        return 'query_misaligned', diagnosis
+
+    def skill_rewrite_query(skill_name, question, reasoning_answer, evidences):
+        rewrite_prompt = skillrag_rewrite_prompt(skill_name, question, reasoning_answer, evidences)
+        with torch.no_grad():
+            rewrite_out = model.generate(tokenizer(rewrite_prompt, return_tensors='pt')['input_ids'].to(device), do_sample=False, max_new_tokens=48)
+        rewrite_text = model.to_string(rewrite_out)[0]
+        rewrite_text = rewrite_text.replace('</s>','').replace('<eos>','').strip()
+        if len(rewrite_text) == 0:
+            return question
+        return rewrite_text
 
     retr_count_list, pred_list = [], []
+    skillrag_initial_outputs = []
+    skillrag_round_logs = []
     steps = 0
     softmax_f = torch.nn.Softmax(dim = 1)
     if retr_method == 'probing':
@@ -508,25 +593,161 @@ def main(args):
             if steps > steps_limit:
                 end = time.time()
                 break
+    
+    if retr_method == 'skillrag':
+        start = time.time()
+        max_skill_round = 3
+        for value in tqdm(dataloader):
+            retr_count = 0  # retrieval round count
+            search_input_new = value['text'][0]
+            final_output_text = ''
+            sample_round_logs = []
+            cache = {}
+            with torch.no_grad():
+                initial_output = model.generate(value['input_ids'], do_sample=False, max_new_tokens=max_new_tokens, stop_tokenss=["Question:"])
+                initial_output.to('cpu')
+            initial_output_text = model.to_string(initial_output)[0]
+            prediction_do_more_retriever, initial_scores = prober_need_retrieval()
+            initial_scores = [float(x) for x in initial_scores.tolist()]
+            skillrag_initial_outputs.append(initial_output_text)
+
+            if prediction_do_more_retriever == 0:
+                final_output_text = initial_output_text
+                sample_round_logs.append({
+                    'stage': 'initial',
+                    'prober_scores': initial_scores,
+                    'prediction_do_more_retriever': int(prediction_do_more_retriever),
+                    'stopped_after_initial': True,
+                })
+                skillrag_round_logs.append(json.dumps(sample_round_logs, ensure_ascii=False))
+                pred_list.append(final_output_text)
+                retr_count_list.append(retr_count)
+                steps += 1
+                if steps > steps_limit:
+                    end = time.time()
+                    break
+                continue
+
+            while prediction_do_more_retriever == 1:
+                cache = {}
+                if is_sparse:
+                    retrieved_passages = bm25.retrieve(search_input_new)
+                    evidences = return_evidences(retrieved_passages)
+                else:
+                    D, I = batch_topk_sim(model_retr, [search_input_new], index, k = 5)
+                    retrieved_passages = list(corpus.iloc[I[0].tolist(),0])
+                    evidences = return_evidences(retrieved_passages)
+
+                new_input = prompt_function_retr(value['text'][0], evidences)
+                with torch.no_grad():
+                    output = model.generate(tokenizer(new_input, return_tensors='pt')['input_ids'].to(device), do_sample=False, max_new_tokens=max_new_tokens, stop_tokenss=["Question:"])
+                    output.to('cpu')
+                output_text = model.to_string(output)[0]
+                final_output_text = output_text
+                retr_count += 1
+
+                prediction_do_more_retriever, round_scores = prober_need_retrieval()
+                round_scores = [float(x) for x in round_scores.tolist()]
+                round_log = {
+                    'stage': f'retrieval_round_{retr_count}',
+                    'retrieval_query': search_input_new,
+                    'evidences': evidences,
+                    'output_text': output_text,
+                    'prober_scores': round_scores,
+                    'prediction_do_more_retriever': int(prediction_do_more_retriever),
+                }
+                if prediction_do_more_retriever == 0:
+                    round_log['stop_reason'] = 'prober_stop'
+                    sample_round_logs.append(round_log)
+                    break
+
+                if retr_count >= max_skill_round:
+                    round_log['stop_reason'] = 'max_round_reached'
+                    sample_round_logs.append(round_log)
+                    break
+
+                selected_skill, diagnosis = choose_skill(value['text'][0], output_text)
+                rewritten_query = skill_rewrite_query(selected_skill, value['text'][0], output_text, evidences)
+                round_log['diagnosis'] = diagnosis
+                round_log['selected_skill'] = selected_skill
+                round_log['rewritten_query'] = rewritten_query
+                sample_round_logs.append(round_log)
+                search_input_new = rewritten_query
+
+            skillrag_round_logs.append(json.dumps(sample_round_logs, ensure_ascii=False))
+            pred_list.append(final_output_text)
+            retr_count_list.append(retr_count)
+            steps += 1
+            if steps > steps_limit:
+                end = time.time()
+                break
       
     
+    if 'end' not in locals():
+        end = time.time()
     acc, metric, pred_to_train=evaluator(df, metric, pred_list,args)
     
     print('time: ',end-start)
     print('acc: ', sum(acc)/len(acc))
-    import os
     if args.extracting_cot_qa:
         if '7' in model_id:
             _save_path = '7b'
         if '2' in model_id:
             _save_path = '2b'
-        dfdf=pd.DataFrame([pred_list, pred_to_train, df['answer'][:steps_limit+1], acc]).T
-        dfdf.columns= ['pred_with_prompt','pred','answer','acc']
+        if not args.extract_sep:
+            save_data_name = 'all'
+
+        used_len = min(len(pred_list), len(pred_to_train), len(acc), len(df))
+        question_with_prompt = [prompt_function_data(q) for q in df['query'][:used_len]]
+        dfdf = pd.DataFrame({
+            'retr_method': [retr_method] * used_len,
+            'question_with_prompt': question_with_prompt,
+            'pred_with_prompt': pred_list[:used_len],
+            'pred': pred_to_train[:used_len],
+            'answer': list(df['answer'][:used_len]),
+            'acc': acc[:used_len],
+        })
+        if retr_method == 'skillrag':
+            dfdf['initial_output'] = skillrag_initial_outputs[:used_len]
+            dfdf['round_logs'] = skillrag_round_logs[:used_len]
         
         save_path = f"dataset/{_save_path}"
         if not os.path.exists(save_path):
             os.makedirs(save_path)
-        dfdf.to_csv(f"dataset/{_save_path}/retrieval_qa_{model_id.split('/')[1]}_{dataset_name}_{retr_method}_{tr_or_dev}_{save_data_name}_{steps_limit}.csv", index=False)
+        current_save_file = f"dataset/{_save_path}/retrieval_qa_{model_id.split('/')[1]}_{dataset_name}_{retr_method}_{tr_or_dev}_{save_data_name}_{steps_limit}.csv"
+        dfdf.to_csv(current_save_file, index=False)
+
+        if retr_method in ['simple', 'none']:
+            counterpart_method = 'none' if retr_method == 'simple' else 'simple'
+            counterpart_file = f"dataset/{_save_path}/retrieval_qa_{model_id.split('/')[1]}_{dataset_name}_{counterpart_method}_{tr_or_dev}_{save_data_name}_{steps_limit}.csv"
+            if os.path.exists(counterpart_file):
+                current_df = pd.read_csv(current_save_file).dropna(subset=['question_with_prompt', 'pred', 'acc']).reset_index(drop=True)
+                other_df = pd.read_csv(counterpart_file).dropna(subset=['question_with_prompt', 'pred', 'acc']).reset_index(drop=True)
+                merged_df = pd.concat([current_df, other_df], axis=0, ignore_index=True)
+                acc_trace_df = (
+                    merged_df
+                    .pivot_table(index='question_with_prompt', columns='retr_method', values='acc', aggfunc='first')
+                    .rename(columns={'none': 'none_acc', 'simple': 'simple_acc'})
+                    .reset_index()
+                )
+                merged_df = merged_df.merge(acc_trace_df[['question_with_prompt', 'none_acc', 'simple_acc']], on='question_with_prompt', how='left')
+                none_acc = merged_df['none_acc']
+                simple_acc = merged_df['simple_acc']
+                merged_df['need_retrieval_label'] = np.where(none_acc == 1, 0, 1)
+                merged_df['unstable_case'] = np.where((none_acc == 1) & (simple_acc == 0), 1, 0)
+                merged_df['use_for_training'] = np.where(merged_df['unstable_case'] == 1, 0, 1)
+                merged_df = merged_df.sample(frac=1, random_state=42).reset_index(drop=True)
+
+                if len(merged_df) > 500:
+                    test_size = 500
+                else:
+                    test_size = max(1, int(len(merged_df) * 0.2))
+
+                test_df = merged_df.iloc[:test_size].reset_index(drop=True)
+                train_df = merged_df.iloc[test_size:].reset_index(drop=True)
+
+                train_df.to_csv(f"dataset/{_save_path}/retrieval_qa_{model_id.split('/')[1]}_all_train_in3_.csv", index=False)
+                test_df.to_csv(f"dataset/{_save_path}/retrieval_qa_{model_id.split('/')[1]}_all_zeroshot_test_500.csv", index=False)
         
         print('making retrieval dataset is end !!!')
     
@@ -561,7 +782,7 @@ def main(args):
 
 if __name__ =='__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--retr_method', type=str, default='') # probing, none, adaptive, simple, flare, dragin, fix-length-retrieval, fix-sentence, linguistic
+    parser.add_argument('--retr_method', type=str, default='') # probing, none, simple, skillrag, adaptive, flare, dragin, fix-length-retrieval, fix-sentence, linguistic
     parser.add_argument('--position', type=str, default='resid_post') # attn_out, resid_mid, mlp_out, resid_post
     parser.add_argument('--dataset_name', type=str, default='hotpotqa') # hotpotqa, nq, musique, 2wikimultihopqa, squad, trivia
     

@@ -210,3 +210,51 @@ Answer: 1
 Question: {q}
 Answer:'''
     return return_q
+
+def skillrag_diagnosis_prompt(question, reasoning_answer):
+    p = f'''You are analyzing why an answer is wrong.
+Read the question and the model's wrong reasoning+answer, then output one short error diagnosis sentence.
+
+Question:
+{question}
+
+Wrong reasoning+answer:
+{reasoning_answer}
+
+Diagnosis:'''
+    return p
+
+def skillrag_router_prompt(question, reasoning_answer, diagnosis):
+    p = f'''You are a routing classifier.
+Choose exactly one skill name from:
+1) query_misaligned
+2) multi_hop_missing
+3) evidence_not_used
+
+Question:
+{question}
+
+Wrong reasoning+answer:
+{reasoning_answer}
+
+Diagnosis:
+{diagnosis}
+
+Only output one skill name.'''
+    return p
+
+def skillrag_rewrite_prompt(skill_name, question, reasoning_answer, evidences):
+    p = f'''You are improving a retrieval query for QA.
+Skill: {skill_name}
+
+Question:
+{question}
+
+Wrong reasoning+answer:
+{reasoning_answer}
+
+Current evidences:
+{evidences}
+
+Return one improved retrieval query only.'''
+    return p

@@ -93,7 +93,7 @@ def make_iirc_documents():
 
     random.seed(13370)  # Don't change.
 
-    with open(raw_filepath, "r") as file:
+    with open(raw_filepath, "r", encoding="utf-8-sig") as file:
         full_data = json.load(file)
 
         for title, page_html in tqdm(full_data.items()):
@@ -143,7 +143,7 @@ def make_2wikimultihopqa_documents():
     used_full_ids = set()
     for raw_filepath in raw_filepaths:
 
-        with open(raw_filepath, "r") as file:
+        with open(raw_filepath, "r", encoding="utf-8-sig") as file:
             full_data = json.load(file)
             for instance in tqdm(full_data):
 
@@ -201,7 +201,7 @@ def make_musique_documents():
     used_full_ids = set()
     for raw_filepath in raw_filepaths:
 
-        with open(raw_filepath, "r") as file:
+        with open(raw_filepath, "r", encoding="utf-8-sig") as file:
             for line in tqdm(file.readlines()):
                 if not line.strip():
                     continue
@@ -257,7 +257,7 @@ def make_wiki_documents():
     documnets = []
     texts = []
     doc_ids = []
-    with open(raw_glob_filepath) as input_file:
+    with open(raw_glob_filepath, "r", encoding="utf-8-sig") as input_file:
         tr = csv.reader(input_file, delimiter='\t')
         next(tr)
         for line in tqdm(tr):
@@ -303,7 +303,7 @@ def make_nq_documents():
     texts, doc_ids = [], []
     
     for raw_filepath in raw_filepaths:
-        with open(raw_filepath, "r") as file:
+        with open(raw_filepath, "r", encoding="utf-8-sig") as file:
             full_data = json.load(file)
             for instance in tqdm(full_data):
                 for value2 in instance['positive_ctxs']:
@@ -336,7 +336,7 @@ def make_trivia_documents():
     texts, doc_ids = [], []
     
     for raw_filepath in raw_filepaths:
-        with open(raw_filepath, "r") as file:
+        with open(raw_filepath, "r", encoding="utf-8-sig") as file:
             full_data = json.load(file)
             for instance in tqdm(full_data):
                 for value2 in instance['positive_ctxs']:
@@ -369,7 +369,7 @@ def make_squad_documents():
     texts, doc_ids = [], []
     
     for raw_filepath in raw_filepaths:
-        with open(raw_filepath, "r") as file:
+        with open(raw_filepath, "r", encoding="utf-8-sig") as file:
             full_data = json.load(file)
             for instance in tqdm(full_data):
                 for value2 in instance['positive_ctxs']:
