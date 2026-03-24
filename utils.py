@@ -294,16 +294,16 @@ def _model_short_name(model_id: str) -> str:
 
 def _default_probe_layers(model_id: str):
     if model_id == 'google/gemma-2b':
-        return 6, 17, 2
+        return [6, 8, 10, 12, 14, 16]
     if model_id == 'meta-llama/Meta-Llama-3-8B-Instruct':
-        return 12, 23, 2
+        return [12, 16, 20, 24, 28, 32]
     if model_id == 'Qwen/Qwen3-8B':
-        return 12, 23, 2
+        return [12, 16, 20, 24, 28, 32, 36]
     if model_id == 'google/gemma-2-9b-it':
-        return 12, 23, 2
+        return [12, 16, 20, 24, 28, 32, 36, 40]
     if model_id == 'mistralai/Mistral-7B-Instruct-v0.1':
-        return 12, 23, 2
-    return 6, 17, 2
+        return [12, 14, 16, 18, 20, 22]
+    return [6, 8, 10, 12, 14, 16]
 
 def load_prober(_ds, cfg):
     '''
@@ -401,8 +401,8 @@ def load_prober_cfg_gemma_2b(model, config, position, device, start, end, step):
     return [config(model, 'tokens_mean', j, position, device) for j in range(start, end, step)]    
 
 def load_prober_cfg_for_model(model, config, position, device):
-    start, end, step = _default_probe_layers(model.cfg.tokenizer_name)
-    return [config(model, 'tokens_mean', j, position, device) for j in range(start, end, step)]
+    layers = _default_probe_layers(model.cfg.tokenizer_name)
+    return [config(model, 'tokens_mean', j, position, device) for j in layers]
 
 def load_prober_models(_ds, cfg_list):
     probers = [load_prober(_ds, cfg) for cfg in cfg_list]

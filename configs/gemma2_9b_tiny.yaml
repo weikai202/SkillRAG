@@ -18,7 +18,7 @@ train:
   batch_size: 2
   lr: 0.0001
   epochs: 2
-  layers: [12, 14, 16, 18, 20, 22]
+  layers: [12, 16, 20, 24, 28, 32, 36, 40]
   device: cuda:0
   train_ds_ratio: 1.0
 
