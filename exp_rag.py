@@ -28,15 +28,17 @@ from torch.utils.data import DataLoader, Dataset
 from metrics.metrics import EmF1Metric, SupportEmF1Metric
 
 from utils import AttnWeightRAG, FixLengthRAG, StopOnPunctuationWithLogit, Config_Maker, preprocessing, batch_topk_sim
-from utils import load_prober_cfg_gemma_2b, load_prober_models, return_prober_logit_gemma_2b, evaluator, normalize_answer
+from utils import load_prober_cfg_for_model, load_prober_models, return_prober_logit_gemma_2b, evaluator, normalize_answer
 from prompts import inst_prompt, cot_prompt, retr_qa, retr_qa_cot2
-from prompts import skillrag_diagnosis_prompt, skillrag_router_prompt, skillrag_rewrite_prompt
+from prompts import skillrag_diagnosis_prompt, skillrag_router_prompt
+from prompts import skillrag_query_rewrite_prompt, skillrag_decomposition_prompt, skillrag_evidence_grounded_prompt
 
 from typing import Dict, List, NamedTuple, Optional, Tuple, Union, cast, overload
 from typing_extensions import Literal
 from jaxtyping import Float, Int
 
 from transformer_lens.utils import USE_DEFAULT_VALUE
+SUPPORTED_PROBER_MODELS = ['google/gemma-2b', 'meta-llama/Meta-Llama-3-8B-Instruct', 'Qwen/Qwen3-8B', 'google/gemma-2-9b-it']
 
 class CustomHookedTransformer(HookedTransformer):
     def __init__(
@@ -309,9 +311,8 @@ def main(args):
     if retr_method == 'probing':
 
 
-        if 'google/gemma-2b' == model_id:
-            # cfg_list = load_prober_cfg_gemma_2b(model, Config_Maker, position, device, 0,17, 1)
-            cfg_list = load_prober_cfg_gemma_2b(model, Config_Maker, position, device, 6,17, 2)
+        if model_id in SUPPORTED_PROBER_MODELS:
+            cfg_list = load_prober_cfg_for_model(model, Config_Maker, position, device)
             probers = load_prober_models(_ds, cfg_list)
             layer_configs = cfg_list
             
@@ -331,8 +332,8 @@ def main(args):
             layer_name = f'blocks.{prober_cfg.layer}.hook_{prober_cfg.position}'
             add_layer_hook(model, layer_name)
     if retr_method == 'skillrag':
-        if 'google/gemma-2b' == model_id:
-            cfg_list = load_prober_cfg_gemma_2b(model, Config_Maker, position, device, 6,17, 2)
+        if model_id in SUPPORTED_PROBER_MODELS:
+            cfg_list = load_prober_cfg_for_model(model, Config_Maker, position, device)
             probers = load_prober_models(_ds, cfg_list)
             layer_configs = cfg_list
         cache = {}
@@ -430,7 +431,7 @@ def main(args):
             return new_pred.replace('</s>','').replace('<eos>','').replace('Answer:','').strip()
     
     def prober_need_retrieval():
-        if 'google/gemma-2b' == model_id:
+        if model_id in SUPPORTED_PROBER_MODELS:
             logits = return_prober_logit_gemma_2b(return_mean_output, cfg_list, probers)
             for_set_threshold = torch.zeros_like(logits[0].squeeze())
             for num in range(args.ablation, len(logits)):
@@ -444,32 +445,59 @@ def main(args):
 
     def diagnose_failure(question, reasoning_answer):
         diagnosis_prompt = skillrag_diagnosis_prompt(question, reasoning_answer)
+        diagnosis_input_ids = tokenizer(diagnosis_prompt, return_tensors='pt')['input_ids'].to(device)
         with torch.no_grad():
-            diagnosis_out = model.generate(tokenizer(diagnosis_prompt, return_tensors='pt')['input_ids'].to(device), do_sample=False, max_new_tokens=48)
-        diagnosis_text = model.to_string(diagnosis_out)[0]
+            diagnosis_out = model.generate(diagnosis_input_ids, do_sample=False, max_new_tokens=48)
+        diagnosis_text = tokenizer.decode(diagnosis_out[0][diagnosis_input_ids.shape[1]:], skip_special_tokens=True)
         return diagnosis_text.replace('</s>','').replace('<eos>','').strip()
 
     def choose_skill(question, reasoning_answer):
         diagnosis = diagnose_failure(question, reasoning_answer)
         router_prompt = skillrag_router_prompt(question, reasoning_answer, diagnosis)
+        router_input_ids = tokenizer(router_prompt, return_tensors='pt')['input_ids'].to(device)
         with torch.no_grad():
-            route_out = model.generate(tokenizer(router_prompt, return_tensors='pt')['input_ids'].to(device), do_sample=False, max_new_tokens=20)
-        route_text = model.to_string(route_out)[0].lower()
+            route_out = model.generate(router_input_ids, do_sample=False, max_new_tokens=20)
+        route_text = tokenizer.decode(route_out[0][router_input_ids.shape[1]:], skip_special_tokens=True).lower()
         if 'multi_hop_missing' in route_text:
             return 'multi_hop_missing', diagnosis
         if 'evidence_not_used' in route_text:
             return 'evidence_not_used', diagnosis
         return 'query_misaligned', diagnosis
 
-    def skill_rewrite_query(skill_name, question, reasoning_answer, evidences):
-        rewrite_prompt = skillrag_rewrite_prompt(skill_name, question, reasoning_answer, evidences)
+    def parse_search_query(skill_name, raw_text, fallback_query):
+        text = raw_text.replace('</s>', '').replace('<eos>', '').strip()
+        lines = [l.strip() for l in text.split('\n') if l.strip()]
+        if len(lines) == 0:
+            return fallback_query
+
+        for key in ['Final Search Query:', 'Search Query:', 'Query:']:
+            for line in lines:
+                if key.lower() in line.lower():
+                    return line.split(':', 1)[1].strip() if ':' in line else line
+
+        if skill_name == 'multi_hop_missing':
+            sub_queries = []
+            for line in lines:
+                low = line.lower()
+                if low.startswith('sub-query') or line.endswith('?') or line.startswith('-'):
+                    sub_queries.append(line.split(':', 1)[1].strip() if ':' in line else line.lstrip('-').strip())
+            if len(sub_queries) > 0:
+                return ' '.join(sub_queries[:3]).strip()
+
+        return lines[0]
+
+    def skill_generate_search_query(skill_name, question, reasoning_answer, evidences):
+        if skill_name == 'query_misaligned':
+            generation_prompt = skillrag_query_rewrite_prompt(question, reasoning_answer, evidences)
+        elif skill_name == 'multi_hop_missing':
+            generation_prompt = skillrag_decomposition_prompt(question, reasoning_answer, evidences)
+        else:
+            generation_prompt = skillrag_evidence_grounded_prompt(question, reasoning_answer, evidences)
+        generation_input_ids = tokenizer(generation_prompt, return_tensors='pt')['input_ids'].to(device)
         with torch.no_grad():
-            rewrite_out = model.generate(tokenizer(rewrite_prompt, return_tensors='pt')['input_ids'].to(device), do_sample=False, max_new_tokens=48)
-        rewrite_text = model.to_string(rewrite_out)[0]
-        rewrite_text = rewrite_text.replace('</s>','').replace('<eos>','').strip()
-        if len(rewrite_text) == 0:
-            return question
-        return rewrite_text
+            generated = model.generate(generation_input_ids, do_sample=False, max_new_tokens=96)
+        generated_text = tokenizer.decode(generated[0][generation_input_ids.shape[1]:], skip_special_tokens=True)
+        return parse_search_query(skill_name, generated_text, question), generated_text
 
     retr_count_list, pred_list = [], []
     skillrag_initial_outputs = []
@@ -487,7 +515,7 @@ def main(args):
                 if steps % 10 == 0:
                     print(model.to_string(output)[0])
                 
-            if 'google/gemma-2b' == model_id:
+            if model_id in SUPPORTED_PROBER_MODELS:
                 logits = return_prober_logit_gemma_2b(return_mean_output, cfg_list, probers)
                 for_set_threshold = torch.zeros_like(logits[0].squeeze())
                 
@@ -528,7 +556,7 @@ def main(args):
                         output = model.generate(tokenizer(new_input, return_tensors='pt')['input_ids'].to(device), do_sample=False, max_new_tokens=max_new_tokens, stop_tokenss=["Question:"])
                         output.to('cpu')
                         
-                        if 'google/gemma-2b' == model_id:
+                        if model_id in SUPPORTED_PROBER_MODELS:
                             logits = return_prober_logit_gemma_2b(return_mean_output, cfg_list, probers)
                             for_set_threshold = torch.zeros_like(logits[0].squeeze())
                             for num in range(args.ablation, len(logits)):
@@ -596,10 +624,8 @@ def main(args):
     
     if retr_method == 'skillrag':
         start = time.time()
-        max_skill_round = 3
         for value in tqdm(dataloader):
-            retr_count = 0  # retrieval round count
-            search_input_new = value['text'][0]
+            retr_count = 0
             final_output_text = ''
             sample_round_logs = []
             cache = {}
@@ -628,51 +654,71 @@ def main(args):
                     break
                 continue
 
-            while prediction_do_more_retriever == 1:
+            # Stage 1: first retrieval (prober said retrieval is needed)
+            first_query = value['text'][0]
+            cache = {}
+            if is_sparse:
+                first_retrieved_passages = bm25.retrieve(first_query)
+                first_evidences = return_evidences(first_retrieved_passages)
+            else:
+                D, I = batch_topk_sim(model_retr, [first_query], index, k = 5)
+                first_retrieved_passages = list(corpus.iloc[I[0].tolist(),0])
+                first_evidences = return_evidences(first_retrieved_passages)
+
+            first_input = prompt_function_retr(value['text'][0], first_evidences)
+            with torch.no_grad():
+                first_output = model.generate(tokenizer(first_input, return_tensors='pt')['input_ids'].to(device), do_sample=False, max_new_tokens=max_new_tokens, stop_tokenss=["Question:"])
+                first_output.to('cpu')
+            first_output_text = model.to_string(first_output)[0]
+            final_output_text = first_output_text
+            retr_count = 1
+
+            first_need_more, first_scores = prober_need_retrieval()
+            first_scores = [float(x) for x in first_scores.tolist()]
+            sample_round_logs.append({
+                'stage': 'retrieval_round_1',
+                'retrieval_query': first_query,
+                'evidences': first_evidences,
+                'output_text': first_output_text,
+                'prober_scores': first_scores,
+                'prediction_do_more_retriever': int(first_need_more),
+            })
+
+            if first_need_more == 1:
+                # Stage 2: diagnosis + skill + second retrieval
+                selected_skill, diagnosis = choose_skill(value['text'][0], first_output_text)
+                second_query, second_generation_raw = skill_generate_search_query(selected_skill, value['text'][0], first_output_text, first_evidences)
+
                 cache = {}
                 if is_sparse:
-                    retrieved_passages = bm25.retrieve(search_input_new)
-                    evidences = return_evidences(retrieved_passages)
+                    second_retrieved_passages = bm25.retrieve(second_query)
+                    second_evidences = return_evidences(second_retrieved_passages)
                 else:
-                    D, I = batch_topk_sim(model_retr, [search_input_new], index, k = 5)
-                    retrieved_passages = list(corpus.iloc[I[0].tolist(),0])
-                    evidences = return_evidences(retrieved_passages)
+                    D, I = batch_topk_sim(model_retr, [second_query], index, k = 5)
+                    second_retrieved_passages = list(corpus.iloc[I[0].tolist(),0])
+                    second_evidences = return_evidences(second_retrieved_passages)
 
-                new_input = prompt_function_retr(value['text'][0], evidences)
+                second_input = prompt_function_retr(value['text'][0], second_evidences)
                 with torch.no_grad():
-                    output = model.generate(tokenizer(new_input, return_tensors='pt')['input_ids'].to(device), do_sample=False, max_new_tokens=max_new_tokens, stop_tokenss=["Question:"])
-                    output.to('cpu')
-                output_text = model.to_string(output)[0]
-                final_output_text = output_text
-                retr_count += 1
+                    second_output = model.generate(tokenizer(second_input, return_tensors='pt')['input_ids'].to(device), do_sample=False, max_new_tokens=max_new_tokens, stop_tokenss=["Question:"])
+                    second_output.to('cpu')
+                second_output_text = model.to_string(second_output)[0]
+                final_output_text = second_output_text
+                retr_count = 2
+                second_need_more, second_scores = prober_need_retrieval()
+                second_scores = [float(x) for x in second_scores.tolist()]
 
-                prediction_do_more_retriever, round_scores = prober_need_retrieval()
-                round_scores = [float(x) for x in round_scores.tolist()]
-                round_log = {
-                    'stage': f'retrieval_round_{retr_count}',
-                    'retrieval_query': search_input_new,
-                    'evidences': evidences,
-                    'output_text': output_text,
-                    'prober_scores': round_scores,
-                    'prediction_do_more_retriever': int(prediction_do_more_retriever),
-                }
-                if prediction_do_more_retriever == 0:
-                    round_log['stop_reason'] = 'prober_stop'
-                    sample_round_logs.append(round_log)
-                    break
-
-                if retr_count >= max_skill_round:
-                    round_log['stop_reason'] = 'max_round_reached'
-                    sample_round_logs.append(round_log)
-                    break
-
-                selected_skill, diagnosis = choose_skill(value['text'][0], output_text)
-                rewritten_query = skill_rewrite_query(selected_skill, value['text'][0], output_text, evidences)
-                round_log['diagnosis'] = diagnosis
-                round_log['selected_skill'] = selected_skill
-                round_log['rewritten_query'] = rewritten_query
-                sample_round_logs.append(round_log)
-                search_input_new = rewritten_query
+                sample_round_logs.append({
+                    'stage': 'retrieval_round_2',
+                    'diagnosis': diagnosis,
+                    'selected_skill': selected_skill,
+                    'skill_generation_raw': second_generation_raw,
+                    'retrieval_query': second_query,
+                    'evidences': second_evidences,
+                    'output_text': second_output_text,
+                    'prober_scores': second_scores,
+                    'prediction_do_more_retriever': int(second_need_more),
+                })
 
             skillrag_round_logs.append(json.dumps(sample_round_logs, ensure_ascii=False))
             pred_list.append(final_output_text)
@@ -692,8 +738,12 @@ def main(args):
     if args.extracting_cot_qa:
         if '7' in model_id:
             _save_path = '7b'
-        if '2' in model_id:
+        if '2b' in model_id:
             _save_path = '2b'
+        if '8' in model_id:
+            _save_path = '8b'
+        if '9' in model_id:
+            _save_path = '9b'
         if not args.extract_sep:
             save_data_name = 'all'
 
@@ -788,7 +838,7 @@ if __name__ =='__main__':
     
     # dnese - squad, hotptoqa 메모리 부족 이슈
     # sparse - squad, hotptoqa 
-    parser.add_argument('--model_id', type=str, default='google/gemma-2b') # google/gemma-2b mistralai/Mistral-7B-v0.1
+    parser.add_argument('--model_id', type=str, default='meta-llama/Meta-Llama-3-8B-Instruct') # google/gemma-2b meta-llama/Meta-Llama-3-8B-Instruct Qwen/Qwen3-8B google/gemma-2-9b-it
     parser.add_argument('--tr_or_dev', type=str, default='dev') # train
     
     parser.add_argument('--ds', type=int, default=3) # 25,5, 75, 1000, 3

@@ -23,7 +23,7 @@ def set_seed(seed):
     
 def main(args):
     wandb.init(
-        project='probing_train_gemma2b_final_in3', # 'probing_train_cot_7b_v1'
+        project='probing_train_llama3_8b_final_in3', # 'probing_train_cot_7b_v1'
         entity='weikai1-university-of-michigan',
         name=f"{args.train_ds_ratio}_{args.model_id.split('/')[1]}_linear999_{args.method}_{args.layer}_{args.batch_size}"
     )
@@ -34,10 +34,19 @@ def main(args):
     device = args.device
     model = HookedTransformer.from_pretrained(model_id, device = device, cache_dir="./cache/")
     
-    train_data_path = 'dataset/2b/retrieval_qa_gemma-2b_all_train_in3_balanced.csv'
+    model_short = args.model_id.split('/')[1]
+    if '9' in model_short:
+        save_dir = '9b'
+    elif '8' in model_short:
+        save_dir = '8b'
+    elif '7' in model_short:
+        save_dir = '7b'
+    else:
+        save_dir = '2b'
+    train_data_path = f'dataset/{save_dir}/retrieval_qa_{model_short}_all_train_in3_balanced.csv'
     train_df=pd.read_csv(train_data_path).dropna(axis=0).reset_index(drop=True)
     train_df = train_df[:int(len(train_df) * train_ratio)]
-    dev_data_path ='dataset/2b/retrieval_qa_gemma-2b_all_zeroshot_test_500.csv'
+    dev_data_path = f'dataset/{save_dir}/retrieval_qa_{model_short}_all_zeroshot_test_500.csv'
     
     
     dev_df=pd.read_csv(dev_data_path)
@@ -366,7 +375,7 @@ if __name__ == '__main__':
     parser.add_argument('--epochs', type=int, default=3)
     parser.add_argument('--seed', type=int, default=3)
     parser.add_argument('--device', type=str, default='cuda:0')
-    parser.add_argument('--model_id', default = 'google/gemma-2b')
+    parser.add_argument('--model_id', default = 'meta-llama/Meta-Llama-3-8B-Instruct')
     args = parser.parse_args()
     main(args)
 '''

@@ -3,9 +3,41 @@ python exp_rag.py --retr_method probing --steps_limit 500 --dataset_name musique
 python exp_rag.py --retr_method probing --steps_limit 500 --dataset_name hotpotqa --is_cot --is_sparse --model_id google/gemma-2b --ds 3
 python exp_rag.py --retr_method probing --steps_limit 500 --dataset_name trivia --is_cot --is_sparse --model_id google/gemma-2b --ds 3
 python exp_rag.py --retr_method probing --steps_limit 500 --dataset_name 2wikimultihopqa --is_cot --is_sparse --model_id google/gemma-2b --ds 3
-
 python exp_rag.py --retr_method skillrag --steps_limit 500 --dataset_name nq --is_cot --is_sparse --model_id google/gemma-2b --ds 3
 python exp_rag.py --retr_method skillrag --steps_limit 500 --dataset_name musique --is_cot --is_sparse --model_id google/gemma-2b --ds 3
 python exp_rag.py --retr_method skillrag --steps_limit 500 --dataset_name hotpotqa --is_cot --is_sparse --model_id google/gemma-2b --ds 3
 python exp_rag.py --retr_method skillrag --steps_limit 500 --dataset_name trivia --is_cot --is_sparse --model_id google/gemma-2b --ds 3
 python exp_rag.py --retr_method skillrag --steps_limit 500 --dataset_name 2wikimultihopqa --is_cot --is_sparse --model_id google/gemma-2b --ds 3
+
+python exp_rag.py --retr_method probing --steps_limit 500 --dataset_name nq --is_cot --is_sparse --model_id meta-llama/Meta-Llama-3-8B-Instruct --ds 3
+python exp_rag.py --retr_method probing --steps_limit 500 --dataset_name musique --is_cot --is_sparse --model_id meta-llama/Meta-Llama-3-8B-Instruct --ds 3
+python exp_rag.py --retr_method probing --steps_limit 500 --dataset_name hotpotqa --is_cot --is_sparse --model_id meta-llama/Meta-Llama-3-8B-Instruct --ds 3
+python exp_rag.py --retr_method probing --steps_limit 500 --dataset_name trivia --is_cot --is_sparse --model_id meta-llama/Meta-Llama-3-8B-Instruct --ds 3
+python exp_rag.py --retr_method probing --steps_limit 500 --dataset_name 2wikimultihopqa --is_cot --is_sparse --model_id meta-llama/Meta-Llama-3-8B-Instruct --ds 3
+python exp_rag.py --retr_method skillrag --steps_limit 500 --dataset_name nq --is_cot --is_sparse --model_id meta-llama/Meta-Llama-3-8B-Instruct --ds 3
+python exp_rag.py --retr_method skillrag --steps_limit 500 --dataset_name musique --is_cot --is_sparse --model_id meta-llama/Meta-Llama-3-8B-Instruct --ds 3
+python exp_rag.py --retr_method skillrag --steps_limit 500 --dataset_name hotpotqa --is_cot --is_sparse --model_id meta-llama/Meta-Llama-3-8B-Instruct --ds 3
+python exp_rag.py --retr_method skillrag --steps_limit 500 --dataset_name trivia --is_cot --is_sparse --model_id meta-llama/Meta-Llama-3-8B-Instruct --ds 3
+python exp_rag.py --retr_method skillrag --steps_limit 500 --dataset_name 2wikimultihopqa --is_cot --is_sparse --model_id meta-llama/Meta-Llama-3-8B-Instruct --ds 3
+
+python exp_rag.py --retr_method probing --steps_limit 500 --dataset_name nq --is_cot --is_sparse --model_id Qwen/Qwen3-8B --ds 3
+python exp_rag.py --retr_method probing --steps_limit 500 --dataset_name musique --is_cot --is_sparse --model_id Qwen/Qwen3-8B --ds 3
+python exp_rag.py --retr_method probing --steps_limit 500 --dataset_name hotpotqa --is_cot --is_sparse --model_id Qwen/Qwen3-8B --ds 3
+python exp_rag.py --retr_method probing --steps_limit 500 --dataset_name trivia --is_cot --is_sparse --model_id Qwen/Qwen3-8B --ds 3
+python exp_rag.py --retr_method probing --steps_limit 500 --dataset_name 2wikimultihopqa --is_cot --is_sparse --model_id Qwen/Qwen3-8B --ds 3
+python exp_rag.py --retr_method skillrag --steps_limit 500 --dataset_name nq --is_cot --is_sparse --model_id Qwen/Qwen3-8B --ds 3
+python exp_rag.py --retr_method skillrag --steps_limit 500 --dataset_name musique --is_cot --is_sparse --model_id Qwen/Qwen3-8B --ds 3
+python exp_rag.py --retr_method skillrag --steps_limit 500 --dataset_name hotpotqa --is_cot --is_sparse --model_id Qwen/Qwen3-8B --ds 3
+python exp_rag.py --retr_method skillrag --steps_limit 500 --dataset_name trivia --is_cot --is_sparse --model_id Qwen/Qwen3-8B --ds 3
+python exp_rag.py --retr_method skillrag --steps_limit 500 --dataset_name 2wikimultihopqa --is_cot --is_sparse --model_id Qwen/Qwen3-8B --ds 3
+
+python exp_rag.py --retr_method probing --steps_limit 500 --dataset_name nq --is_cot --is_sparse --model_id google/gemma-2-9b-it --ds 3
+python exp_rag.py --retr_method probing --steps_limit 500 --dataset_name musique --is_cot --is_sparse --model_id google/gemma-2-9b-it --ds 3
+python exp_rag.py --retr_method probing --steps_limit 500 --dataset_name hotpotqa --is_cot --is_sparse --model_id google/gemma-2-9b-it --ds 3
+python exp_rag.py --retr_method probing --steps_limit 500 --dataset_name trivia --is_cot --is_sparse --model_id google/gemma-2-9b-it --ds 3
+python exp_rag.py --retr_method probing --steps_limit 500 --dataset_name 2wikimultihopqa --is_cot --is_sparse --model_id google/gemma-2-9b-it --ds 3
+python exp_rag.py --retr_method skillrag --steps_limit 500 --dataset_name nq --is_cot --is_sparse --model_id google/gemma-2-9b-it --ds 3
+python exp_rag.py --retr_method skillrag --steps_limit 500 --dataset_name musique --is_cot --is_sparse --model_id google/gemma-2-9b-it --ds 3
+python exp_rag.py --retr_method skillrag --steps_limit 500 --dataset_name hotpotqa --is_cot --is_sparse --model_id google/gemma-2-9b-it --ds 3
+python exp_rag.py --retr_method skillrag --steps_limit 500 --dataset_name trivia --is_cot --is_sparse --model_id google/gemma-2-9b-it --ds 3
+python exp_rag.py --retr_method skillrag --steps_limit 500 --dataset_name 2wikimultihopqa --is_cot --is_sparse --model_id google/gemma-2-9b-it --ds 3

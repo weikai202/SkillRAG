@@ -258,3 +258,94 @@ Current evidences:
 
 Return one improved retrieval query only.'''
     return p
+
+def skillrag_query_rewrite_prompt(question, reasoning_answer, evidences):
+    p = f'''You are a query rewrite expert for open-domain QA.
+Task: rewrite ONE better search query based on failure context.
+
+Example 1
+Question: Which city hosts the Louvre Museum?
+Failed reasoning+answer: I think Louvre is in Italy. Answer: Rome
+Current evidences: passage 1: Louvre is a museum in Paris, France.
+Search Query: city where Louvre Museum is located
+
+Example 2
+Question: Who wrote Pride and Prejudice?
+Failed reasoning+answer: It might be Charles Dickens. Answer: Charles Dickens
+Current evidences: passage 1: Pride and Prejudice is a novel by Jane Austen.
+Search Query: author of Pride and Prejudice Jane Austen
+
+Now solve:
+Question: {question}
+Failed reasoning+answer: {reasoning_answer}
+Current evidences:
+{evidences}
+
+Output format:
+Search Query: <one improved query>'''
+    return p
+
+def skillrag_decomposition_prompt(question, reasoning_answer, evidences):
+    p = f'''You are a decomposition expert for multi-hop retrieval.
+Task: produce 2-3 sub-queries, then one final retrieval query.
+
+Example 1
+Question: Roger O. Egeberg served under which president, and that president served during what years?
+Failed reasoning+answer: He served in health affairs. Answer: unknown years
+Current evidences: passage 1: Egeberg served during Nixon administration.
+Sub-query 1: Which U.S. president is associated with the Nixon administration?
+Sub-query 2: What are the presidency years of Richard Nixon?
+Final Search Query: Richard Nixon presidency years 1969 1974
+
+Example 2
+Question: Which writer was from England, Henry Roth or Robert Erskine Childers?
+Failed reasoning+answer: Henry Roth is European. Answer: Henry Roth
+Current evidences: passage 1: Henry Roth was an American novelist.
+Sub-query 1: What is Henry Roth's nationality?
+Sub-query 2: Where was Robert Erskine Childers born?
+Final Search Query: Robert Erskine Childers born England nationality
+
+Now solve:
+Question: {question}
+Failed reasoning+answer: {reasoning_answer}
+Current evidences:
+{evidences}
+
+Output format:
+Sub-query 1: ...
+Sub-query 2: ...
+Sub-query 3: ...
+Final Search Query: <one combined query for retrieval>'''
+    return p
+
+def skillrag_evidence_grounded_prompt(question, reasoning_answer, evidences):
+    p = f'''You are an evidence-grounded retrieval planner.
+Task: extract missing evidence slots, then output one grounded search query.
+
+Example 1
+Question: What years did the president in Egeberg's administration serve?
+Failed reasoning+answer: Egeberg served under Nixon. Answer: 1970 to 1978
+Current evidences: passage 1: Egeberg served during Nixon administration.
+Missing Slot 1: Exact start and end years of Nixon presidency
+Missing Slot 2: Reliable source confirming those years
+Search Query: exact years Richard Nixon served as U.S. president
+
+Example 2
+Question: Are Giuseppe Verdi and Ambroise Thomas both opera composers?
+Failed reasoning+answer: Verdi was a writer. Answer: No
+Current evidences: passage 1: Ambroise Thomas is a French opera composer.
+Missing Slot 1: Verdi's profession
+Missing Slot 2: Confirmation both are opera composers
+Search Query: Giuseppe Verdi profession opera composer evidence
+
+Now solve:
+Question: {question}
+Failed reasoning+answer: {reasoning_answer}
+Current evidences:
+{evidences}
+
+Output format:
+Missing Slot 1: ...
+Missing Slot 2: ...
+Search Query: <one grounded query>'''
+    return p

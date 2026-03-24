@@ -288,6 +288,23 @@ class Config_Maker():
         self.d_model = model.cfg.d_model
         self.model_id = model.cfg.tokenizer_name
         self.num_classes = 2
+
+def _model_short_name(model_id: str) -> str:
+    return model_id.split('/')[-1]
+
+def _default_probe_layers(model_id: str):
+    if model_id == 'google/gemma-2b':
+        return 6, 17, 2
+    if model_id == 'meta-llama/Meta-Llama-3-8B-Instruct':
+        return 12, 23, 2
+    if model_id == 'Qwen/Qwen3-8B':
+        return 12, 23, 2
+    if model_id == 'google/gemma-2-9b-it':
+        return 12, 23, 2
+    if model_id == 'mistralai/Mistral-7B-Instruct-v0.1':
+        return 12, 23, 2
+    return 6, 17, 2
+
 def load_prober(_ds, cfg):
     '''
     mistral
@@ -302,28 +319,29 @@ def load_prober(_ds, cfg):
     prober=ImprovedProbe(input_size=cfg.d_model, output_size=cfg.num_classes).to(cfg.device)
     if 'mistralai/Mistral-7B-Instruct-v0.1' == cfg.model_id:
         prober.load_state_dict(torch.load(f'ckpt/probing_ckpt/Mistral-7B-Instruct-v0.1_{cfg.method}_probe_2_l{cfg.layer}_{cfg.position}_1.pt'))
-    elif 'google/gemma-2b' == cfg.model_id:
+    elif cfg.model_id in ['google/gemma-2b', 'meta-llama/Meta-Llama-3-8B-Instruct', 'Qwen/Qwen3-8B', 'google/gemma-2-9b-it']:
+        model_short = _model_short_name(cfg.model_id)
         # prober.load_state_dict(torch.load(f'ckpt/prob_model_cot_v2/gemma-2b_v2_linear9995_{cfg.method}_2_l{cfg.layer}_{cfg.position}_1.pt')) # v2 
         if _ds == 25:
-            prober.load_state_dict(torch.load(f'ckpt/_25/0.25_gemma-2b_{cfg.method}_2_l{cfg.layer}_{cfg.position}_ep1.pt')) # v1
+            prober.load_state_dict(torch.load(f'ckpt/_25/0.25_{model_short}_{cfg.method}_2_l{cfg.layer}_{cfg.position}_ep1.pt')) # v1
         elif _ds == 50:
-            prober.load_state_dict(torch.load(f'ckpt/_5/0.5_gemma-2b_{cfg.method}_2_l{cfg.layer}_{cfg.position}_ep1.pt')) # v1
+            prober.load_state_dict(torch.load(f'ckpt/_5/0.5_{model_short}_{cfg.method}_2_l{cfg.layer}_{cfg.position}_ep1.pt')) # v1
         elif _ds == 75:
-            prober.load_state_dict(torch.load(f'ckpt/_75/0.75_gemma-2b_{cfg.method}_2_l{cfg.layer}_{cfg.position}_ep1.pt')) # v1
+            prober.load_state_dict(torch.load(f'ckpt/_75/0.75_{model_short}_{cfg.method}_2_l{cfg.layer}_{cfg.position}_ep1.pt')) # v1
         elif _ds == 777:
-            prober.load_state_dict(torch.load(f'ckpt/_75_full/0.75_gemma-2b_{cfg.method}_2_l{cfg.layer}_{cfg.position}_ep.pt')) # v1
+            prober.load_state_dict(torch.load(f'ckpt/_75_full/0.75_{model_short}_{cfg.method}_2_l{cfg.layer}_{cfg.position}_ep.pt')) # v1
         elif _ds == 3:
-            prober.load_state_dict(torch.load(f'ckpt/_3/in3_1.0_gemma-2b_{cfg.method}_2_l{cfg.layer}_{cfg.position}_ep1.pt')) # v1
+            prober.load_state_dict(torch.load(f'ckpt/_3/in3_1.0_{model_short}_{cfg.method}_2_l{cfg.layer}_{cfg.position}_ep1.pt')) # v1
         elif _ds == 333:
-            prober.load_state_dict(torch.load(f'ckpt/_3_3/in3_0.33_gemma-2b_{cfg.method}_2_l{cfg.layer}_{cfg.position}_ep.pt')) # v1
+            prober.load_state_dict(torch.load(f'ckpt/_3_3/in3_0.33_{model_short}_{cfg.method}_2_l{cfg.layer}_{cfg.position}_ep.pt')) # v1
         elif _ds == 366:
-            prober.load_state_dict(torch.load(f'ckpt/_3_6/in3_0.66_gemma-2b_{cfg.method}_2_l{cfg.layer}_{cfg.position}_ep.pt')) # v1
+            prober.load_state_dict(torch.load(f'ckpt/_3_6/in3_0.66_{model_short}_{cfg.method}_2_l{cfg.layer}_{cfg.position}_ep.pt')) # v1
         elif _ds == 3000:
-            prober.load_state_dict(torch.load(f'ckpt/_3_1000/in3_1000_gemma-2b_{cfg.method}_2_l{cfg.layer}_{cfg.position}_ep11.pt')) # v1
+            prober.load_state_dict(torch.load(f'ckpt/_3_1000/in3_1000_{model_short}_{cfg.method}_2_l{cfg.layer}_{cfg.position}_ep11.pt')) # v1
         elif _ds == 1000:
-            prober.load_state_dict(torch.load(f'ckpt/_1000/1000_gemma-2b_{cfg.method}_2_l{cfg.layer}_{cfg.position}_ep11.pt')) # v1
+            prober.load_state_dict(torch.load(f'ckpt/_1000/1000_{model_short}_{cfg.method}_2_l{cfg.layer}_{cfg.position}_ep11.pt')) # v1
         else:
-            prober.load_state_dict(torch.load(f'ckpt/prob_model_cot_v1/gemma-2b_linear995_{cfg.method}_probe_2_l{cfg.layer}_{cfg.position}_1.pt')) # v1
+            prober.load_state_dict(torch.load(f'ckpt/prob_model_cot_v1/{model_short}_linear995_{cfg.method}_probe_2_l{cfg.layer}_{cfg.position}_1.pt')) # v1
     
     else: assert 'model_id 랑 맞는 prober가 존재하지 않음.'
     prober.eval()
@@ -381,6 +399,10 @@ def batch_topk_sim(model_retr, query: str, index: faiss, k: int):
 
 def load_prober_cfg_gemma_2b(model, config, position, device, start, end, step):
     return [config(model, 'tokens_mean', j, position, device) for j in range(start, end, step)]    
+
+def load_prober_cfg_for_model(model, config, position, device):
+    start, end, step = _default_probe_layers(model.cfg.tokenizer_name)
+    return [config(model, 'tokens_mean', j, position, device) for j in range(start, end, step)]
 
 def load_prober_models(_ds, cfg_list):
     probers = [load_prober(_ds, cfg) for cfg in cfg_list]
