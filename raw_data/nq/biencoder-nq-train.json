@@ -1,0 +1,109 @@
+﻿[
+    {
+        "negative_ctxs":  [
+                              {
+                                  "text":  "Berlin is the capital of Germany."
+                              }
+                          ],
+        "answers":  [
+                        "Paris"
+                    ],
+        "positive_ctxs":  [
+                              {
+                                  "text":  "Paris is the capital and most populous city of France."
+                              }
+                          ],
+        "question":  "What is the capital of France?",
+        "hard_negative_ctxs":  [
+                                   {
+                                       "text":  "Madrid is the capital of Spain."
+                                   }
+                               ]
+    },
+    {
+        "negative_ctxs":  [
+                              {
+                                  "text":  "Charles Dickens wrote Oliver Twist."
+                              }
+                          ],
+        "answers":  [
+                        "William Shakespeare",
+                        "Shakespeare"
+                    ],
+        "positive_ctxs":  [
+                              {
+                                  "text":  "Hamlet is a tragedy written by William Shakespeare."
+                              }
+                          ],
+        "question":  "Who wrote Hamlet?",
+        "hard_negative_ctxs":  [
+                                   {
+                                       "text":  "Jane Austen wrote Pride and Prejudice."
+                                   }
+                               ]
+    },
+    {
+        "negative_ctxs":  [
+                              {
+                                  "text":  "Jupiter is the largest planet in the Solar System."
+                              }
+                          ],
+        "answers":  [
+                        "Mars"
+                    ],
+        "positive_ctxs":  [
+                              {
+                                  "text":  "Mars is often called the Red Planet due to iron oxide on its surface."
+                              }
+                          ],
+        "question":  "Which planet is known as the Red Planet?",
+        "hard_negative_ctxs":  [
+                                   {
+                                       "text":  "Venus is the second planet from the Sun."
+                                   }
+                               ]
+    },
+    {
+        "negative_ctxs":  [
+                              {
+                                  "text":  "The Atlantic Ocean separates Europe and the Americas."
+                              }
+                          ],
+        "answers":  [
+                        "Pacific Ocean",
+                        "Pacific"
+                    ],
+        "positive_ctxs":  [
+                              {
+                                  "text":  "The Pacific Ocean is the largest and deepest ocean on Earth."
+                              }
+                          ],
+        "question":  "What is the largest ocean on Earth?",
+        "hard_negative_ctxs":  [
+                                   {
+                                       "text":  "The Indian Ocean is the third-largest ocean."
+                                   }
+                               ]
+    },
+    {
+        "negative_ctxs":  [
+                              {
+                                  "text":  "World War I ended in 1918."
+                              }
+                          ],
+        "answers":  [
+                        "1945"
+                    ],
+        "positive_ctxs":  [
+                              {
+                                  "text":  "World War II ended in 1945."
+                              }
+                          ],
+        "question":  "In which year did World War II end?",
+        "hard_negative_ctxs":  [
+                                   {
+                                       "text":  "The United Nations was founded in 1945."
+                                   }
+                               ]
+    }
+]
