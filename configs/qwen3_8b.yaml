@@ -1,0 +1,37 @@
+model:
+  id: Qwen/Qwen3-8B
+
+retrieval:
+  is_sparse: true
+  is_cot: true
+
+build_dataset:
+  datasets: [trivia, hotpotqa, nq]
+  steps_limit_train: 3200
+  steps_limit_dev: 500
+  sep_number: 0
+
+train:
+  method: tokens_mean
+  batch_size: 6
+  lr: 0.001
+  epochs: 2
+  layers: [12, 14, 16, 18, 20, 22]
+  device: cuda:0
+  train_ds_ratio: 1.0
+
+prober:
+  ds: 3
+  ablation: 0
+
+evaluate:
+  datasets: [nq, musique, hotpotqa, trivia, 2wikimultihopqa]
+  methods: [probing, skillrag]
+  steps_limit: 500
+  threshold: 0.0
+  position: resid_post
+  max_retrieval_rounds: 3
+  tr_or_dev: dev
+  extracting_cot_qa: true
+  extract_sep: true
+  sep_number: 0

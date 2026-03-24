@@ -230,6 +230,7 @@ Choose exactly one skill name from:
 1) query_misaligned
 2) multi_hop_missing
 3) evidence_not_used
+4) insufficient_evidence
 
 Question:
 {question}
@@ -240,7 +241,8 @@ Wrong reasoning+answer:
 Diagnosis:
 {diagnosis}
 
-Only output one skill name.'''
+Only output one skill name.
+If current evidences are clearly insufficient to answer correctly, output: insufficient_evidence'''
     return p
 
 def skillrag_rewrite_prompt(skill_name, question, reasoning_answer, evidences):
@@ -348,4 +350,23 @@ Output format:
 Missing Slot 1: ...
 Missing Slot 2: ...
 Search Query: <one grounded query>'''
+    return p
+
+
+def skillrag_insufficient_evidence_prompt(question, reasoning_answer, evidences):
+    p = f'''You are a retrieval expansion planner.
+Current evidence is insufficient. Generate one broader and more informative search query
+to fetch missing facts that can answer the question.
+
+Question:
+{question}
+
+Failed reasoning+answer:
+{reasoning_answer}
+
+Current evidences:
+{evidences}
+
+Output format:
+Search Query: <one expanded retrieval query>'''
     return p

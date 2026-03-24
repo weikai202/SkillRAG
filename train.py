@@ -32,9 +32,35 @@ def main(args):
     train_ratio = args.train_ds_ratio
     model_id = args.model_id
     device = args.device
-    model = HookedTransformer.from_pretrained(model_id, device = device, cache_dir="./cache/")
+    if model_id == 'Qwen/Qwen3-8B':
+        # transformer_lens expects hf_config.rope_theta for rotary_base conversion.
+        try:
+            from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
+            if not hasattr(Qwen3Config, 'rope_theta'):
+                Qwen3Config.rope_theta = 1000000
+        except Exception:
+            pass
+
+    model_load_kwargs = {
+        'device': device,
+        'cache_dir': "./cache/",
+        'trust_remote_code': True,
+    }
+    config_kwargs = {'trust_remote_code': True}
+    if model_id == 'Qwen/Qwen3-8B':
+        config_kwargs['rope_theta'] = 1000000
+
+    try:
+        model = HookedTransformer.from_pretrained(
+            model_id,
+            config_kwargs=config_kwargs,
+            **model_load_kwargs,
+        )
+    except TypeError:
+        model = HookedTransformer.from_pretrained(model_id, **model_load_kwargs)
     
     model_short = args.model_id.split('/')[1]
+    dataset_name = args.dataset_name
     if '9' in model_short:
         save_dir = '9b'
     elif '8' in model_short:
@@ -43,10 +69,12 @@ def main(args):
         save_dir = '7b'
     else:
         save_dir = '2b'
-    train_data_path = f'dataset/{save_dir}/retrieval_qa_{model_short}_all_train_in3_balanced.csv'
+    train_data_path = f'dataset/{save_dir}/retrieval_qa_{model_short}_{dataset_name}_all_train_in3_balanced.csv'
+    if not os.path.exists(train_data_path):
+        train_data_path = f'dataset/{save_dir}/retrieval_qa_{model_short}_{dataset_name}_all_train_in3_.csv'
     train_df=pd.read_csv(train_data_path).dropna(axis=0).reset_index(drop=True)
     train_df = train_df[:int(len(train_df) * train_ratio)]
-    dev_data_path = f'dataset/{save_dir}/retrieval_qa_{model_short}_all_zeroshot_test_500.csv'
+    dev_data_path = f'dataset/{save_dir}/retrieval_qa_{model_short}_{dataset_name}_all_zeroshot_test_500.csv'
     
     
     dev_df=pd.read_csv(dev_data_path)
@@ -376,6 +404,7 @@ if __name__ == '__main__':
     parser.add_argument('--seed', type=int, default=3)
     parser.add_argument('--device', type=str, default='cuda:0')
     parser.add_argument('--model_id', default = 'meta-llama/Meta-Llama-3-8B-Instruct')
+    parser.add_argument('--dataset_name', type=str, default='nq')
     args = parser.parse_args()
     main(args)
 '''

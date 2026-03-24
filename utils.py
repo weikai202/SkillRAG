@@ -425,12 +425,18 @@ def evaluator(df, metric, pred_list,args):
             
         else:
             for pred in pred_list:
-                pred=pred.split('\n\n')[4] 
+                try:
+                    pred = pred.split('\n\n')[4]
+                except Exception:
+                    pred = pred
                 if len(pred.split('\n')) > 7:
                     new_pred = '\n'.join(pred.split('\n')[8:])
                     pred_to_train.append(new_pred)
                 else:
-                    new_pred = '\n'.join(pred.split('\n')[1:])
+                    if len(pred.split('\n')) > 1:
+                        new_pred = '\n'.join(pred.split('\n')[1:])
+                    else:
+                        new_pred = pred
                     pred_to_train.append(new_pred)
                 
                 pred_lists.append(new_pred.replace('</s>','').replace('<eos>','').replace('Answer:','').strip())

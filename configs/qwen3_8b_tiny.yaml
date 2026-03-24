@@ -1,0 +1,39 @@
+model:
+  id: Qwen/Qwen3-8B
+
+build_index: false
+
+retrieval:
+  is_sparse: true
+  is_cot: true
+
+build_dataset:
+  datasets: [nq]
+  steps_limit_train: 20
+  steps_limit_dev: 20
+  sep_number: 0
+
+train:
+  method: tokens_mean
+  batch_size: 2
+  lr: 0.0001
+  epochs: 2
+  layers: [12, 14, 16, 18, 20, 22]
+  device: cuda:0
+  train_ds_ratio: 1.0
+
+prober:
+  ds: 3
+  ablation: 0
+
+evaluate:
+  datasets: [nq]
+  methods: [probing, skillrag]
+  steps_limit: 20
+  threshold: 0.0
+  position: resid_post
+  max_retrieval_rounds: 3
+  tr_or_dev: dev
+  extracting_cot_qa: true
+  extract_sep: true
+  sep_number: 0

@@ -4,6 +4,7 @@ from argparse import Namespace
 
 import time
 import json
+import ast
 import os
 import numpy as np
 from tqdm import tqdm
@@ -31,7 +32,7 @@ from utils import AttnWeightRAG, FixLengthRAG, StopOnPunctuationWithLogit, Confi
 from utils import load_prober_cfg_for_model, load_prober_models, return_prober_logit_gemma_2b, evaluator, normalize_answer
 from prompts import inst_prompt, cot_prompt, retr_qa, retr_qa_cot2
 from prompts import skillrag_diagnosis_prompt, skillrag_router_prompt
-from prompts import skillrag_query_rewrite_prompt, skillrag_decomposition_prompt, skillrag_evidence_grounded_prompt
+from prompts import skillrag_query_rewrite_prompt, skillrag_decomposition_prompt, skillrag_evidence_grounded_prompt, skillrag_insufficient_evidence_prompt
 
 from typing import Dict, List, NamedTuple, Optional, Tuple, Union, cast, overload
 from typing_extensions import Literal
@@ -304,7 +305,32 @@ def main(args):
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    model = CustomHookedTransformer.from_pretrained(model_id, device = device)
+    if model_id == 'Qwen/Qwen3-8B':
+        # transformer_lens expects hf_config.rope_theta for rotary_base conversion.
+        try:
+            from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
+            if not hasattr(Qwen3Config, 'rope_theta'):
+                Qwen3Config.rope_theta = 1000000
+        except Exception:
+            pass
+
+    model_load_kwargs = {
+        'device': device,
+        'trust_remote_code': True,
+    }
+    config_kwargs = {'trust_remote_code': True}
+    if model_id == 'Qwen/Qwen3-8B':
+        # Qwen3Config in some transformer_lens versions misses rope_theta expectation.
+        config_kwargs['rope_theta'] = 1000000
+    try:
+        model = CustomHookedTransformer.from_pretrained(
+            model_id,
+            config_kwargs=config_kwargs,
+            **model_load_kwargs,
+        )
+    except TypeError:
+        # Fallback for transformer_lens versions without config_kwargs support.
+        model = CustomHookedTransformer.from_pretrained(model_id, **model_load_kwargs)
     tokenizer = model.tokenizer
     tokenizer.pad_token = tokenizer.eos_token
     
@@ -444,8 +470,18 @@ def main(args):
         return 1, for_set_threshold
 
     def diagnose_failure(question, reasoning_answer):
+        def _tokenize_with_ctx_limit(prompt_text, reserve_new_tokens):
+            max_ctx = getattr(model.cfg, "n_ctx", 2048)
+            max_in = max(32, int(max_ctx) - int(reserve_new_tokens))
+            return tokenizer(
+                prompt_text,
+                return_tensors='pt',
+                truncation=True,
+                max_length=max_in,
+            )['input_ids'].to(device)
+
         diagnosis_prompt = skillrag_diagnosis_prompt(question, reasoning_answer)
-        diagnosis_input_ids = tokenizer(diagnosis_prompt, return_tensors='pt')['input_ids'].to(device)
+        diagnosis_input_ids = _tokenize_with_ctx_limit(diagnosis_prompt, reserve_new_tokens=48)
         with torch.no_grad():
             diagnosis_out = model.generate(diagnosis_input_ids, do_sample=False, max_new_tokens=48)
         diagnosis_text = tokenizer.decode(diagnosis_out[0][diagnosis_input_ids.shape[1]:], skip_special_tokens=True)
@@ -454,10 +490,19 @@ def main(args):
     def choose_skill(question, reasoning_answer):
         diagnosis = diagnose_failure(question, reasoning_answer)
         router_prompt = skillrag_router_prompt(question, reasoning_answer, diagnosis)
-        router_input_ids = tokenizer(router_prompt, return_tensors='pt')['input_ids'].to(device)
+        max_ctx = getattr(model.cfg, "n_ctx", 2048)
+        max_in = max(32, int(max_ctx) - 20)
+        router_input_ids = tokenizer(
+            router_prompt,
+            return_tensors='pt',
+            truncation=True,
+            max_length=max_in,
+        )['input_ids'].to(device)
         with torch.no_grad():
             route_out = model.generate(router_input_ids, do_sample=False, max_new_tokens=20)
         route_text = tokenizer.decode(route_out[0][router_input_ids.shape[1]:], skip_special_tokens=True).lower()
+        if 'insufficient_evidence' in route_text:
+            return 'insufficient_evidence', diagnosis
         if 'multi_hop_missing' in route_text:
             return 'multi_hop_missing', diagnosis
         if 'evidence_not_used' in route_text:
@@ -491,9 +536,18 @@ def main(args):
             generation_prompt = skillrag_query_rewrite_prompt(question, reasoning_answer, evidences)
         elif skill_name == 'multi_hop_missing':
             generation_prompt = skillrag_decomposition_prompt(question, reasoning_answer, evidences)
+        elif skill_name == 'insufficient_evidence':
+            generation_prompt = skillrag_insufficient_evidence_prompt(question, reasoning_answer, evidences)
         else:
             generation_prompt = skillrag_evidence_grounded_prompt(question, reasoning_answer, evidences)
-        generation_input_ids = tokenizer(generation_prompt, return_tensors='pt')['input_ids'].to(device)
+        max_ctx = getattr(model.cfg, "n_ctx", 2048)
+        max_in = max(32, int(max_ctx) - 96)
+        generation_input_ids = tokenizer(
+            generation_prompt,
+            return_tensors='pt',
+            truncation=True,
+            max_length=max_in,
+        )['input_ids'].to(device)
         with torch.no_grad():
             generated = model.generate(generation_input_ids, do_sample=False, max_new_tokens=96)
         generated_text = tokenizer.decode(generated[0][generation_input_ids.shape[1]:], skip_special_tokens=True)
@@ -624,6 +678,7 @@ def main(args):
     
     if retr_method == 'skillrag':
         start = time.time()
+        max_retrieval_rounds = args.max_retrieval_rounds
         for value in tqdm(dataloader):
             retr_count = 0
             final_output_text = ''
@@ -654,71 +709,56 @@ def main(args):
                     break
                 continue
 
-            # Stage 1: first retrieval (prober said retrieval is needed)
-            first_query = value['text'][0]
-            cache = {}
-            if is_sparse:
-                first_retrieved_passages = bm25.retrieve(first_query)
-                first_evidences = return_evidences(first_retrieved_passages)
-            else:
-                D, I = batch_topk_sim(model_retr, [first_query], index, k = 5)
-                first_retrieved_passages = list(corpus.iloc[I[0].tolist(),0])
-                first_evidences = return_evidences(first_retrieved_passages)
-
-            first_input = prompt_function_retr(value['text'][0], first_evidences)
-            with torch.no_grad():
-                first_output = model.generate(tokenizer(first_input, return_tensors='pt')['input_ids'].to(device), do_sample=False, max_new_tokens=max_new_tokens, stop_tokenss=["Question:"])
-                first_output.to('cpu')
-            first_output_text = model.to_string(first_output)[0]
-            final_output_text = first_output_text
-            retr_count = 1
-
-            first_need_more, first_scores = prober_need_retrieval()
-            first_scores = [float(x) for x in first_scores.tolist()]
-            sample_round_logs.append({
-                'stage': 'retrieval_round_1',
-                'retrieval_query': first_query,
-                'evidences': first_evidences,
-                'output_text': first_output_text,
-                'prober_scores': first_scores,
-                'prediction_do_more_retriever': int(first_need_more),
-            })
-
-            if first_need_more == 1:
-                # Stage 2: diagnosis + skill + second retrieval
-                selected_skill, diagnosis = choose_skill(value['text'][0], first_output_text)
-                second_query, second_generation_raw = skill_generate_search_query(selected_skill, value['text'][0], first_output_text, first_evidences)
-
+            current_query = value['text'][0]
+            need_more = 1
+            last_output_text = initial_output_text
+            while (need_more == 1) and (retr_count < max_retrieval_rounds):
                 cache = {}
                 if is_sparse:
-                    second_retrieved_passages = bm25.retrieve(second_query)
-                    second_evidences = return_evidences(second_retrieved_passages)
+                    retrieved_passages = bm25.retrieve(current_query)
+                    evidences = return_evidences(retrieved_passages)
                 else:
-                    D, I = batch_topk_sim(model_retr, [second_query], index, k = 5)
-                    second_retrieved_passages = list(corpus.iloc[I[0].tolist(),0])
-                    second_evidences = return_evidences(second_retrieved_passages)
+                    D, I = batch_topk_sim(model_retr, [current_query], index, k = 5)
+                    retrieved_passages = list(corpus.iloc[I[0].tolist(),0])
+                    evidences = return_evidences(retrieved_passages)
 
-                second_input = prompt_function_retr(value['text'][0], second_evidences)
+                new_input = prompt_function_retr(value['text'][0], evidences)
                 with torch.no_grad():
-                    second_output = model.generate(tokenizer(second_input, return_tensors='pt')['input_ids'].to(device), do_sample=False, max_new_tokens=max_new_tokens, stop_tokenss=["Question:"])
-                    second_output.to('cpu')
-                second_output_text = model.to_string(second_output)[0]
-                final_output_text = second_output_text
-                retr_count = 2
-                second_need_more, second_scores = prober_need_retrieval()
-                second_scores = [float(x) for x in second_scores.tolist()]
+                    output = model.generate(tokenizer(new_input, return_tensors='pt')['input_ids'].to(device), do_sample=False, max_new_tokens=max_new_tokens, stop_tokenss=["Question:"])
+                    output.to('cpu')
+                output_text = model.to_string(output)[0]
+                last_output_text = output_text
+                final_output_text = output_text
+                retr_count += 1
 
-                sample_round_logs.append({
-                    'stage': 'retrieval_round_2',
-                    'diagnosis': diagnosis,
-                    'selected_skill': selected_skill,
-                    'skill_generation_raw': second_generation_raw,
-                    'retrieval_query': second_query,
-                    'evidences': second_evidences,
-                    'output_text': second_output_text,
-                    'prober_scores': second_scores,
-                    'prediction_do_more_retriever': int(second_need_more),
-                })
+                need_more, round_scores = prober_need_retrieval()
+                round_scores = [float(x) for x in round_scores.tolist()]
+                round_log = {
+                    'stage': f'retrieval_round_{retr_count}',
+                    'retrieval_query': current_query,
+                    'evidences': evidences,
+                    'output_text': output_text,
+                    'prober_scores': round_scores,
+                    'prediction_do_more_retriever': int(need_more),
+                }
+
+                if need_more == 0:
+                    round_log['stopped_by_prober'] = True
+                    sample_round_logs.append(round_log)
+                    break
+
+                selected_skill, diagnosis = choose_skill(value['text'][0], output_text)
+                round_log['diagnosis'] = diagnosis
+                round_log['selected_skill'] = selected_skill
+
+                next_query, next_generation_raw = skill_generate_search_query(selected_skill, value['text'][0], output_text, evidences)
+                round_log['skill_generation_raw'] = next_generation_raw
+                round_log['next_retrieval_query'] = next_query
+                sample_round_logs.append(round_log)
+                current_query = next_query
+
+            if final_output_text == '':
+                final_output_text = last_output_text
 
             skillrag_round_logs.append(json.dumps(sample_round_logs, ensure_ascii=False))
             pred_list.append(final_output_text)
@@ -732,6 +772,23 @@ def main(args):
     if 'end' not in locals():
         end = time.time()
     acc, metric, pred_to_train=evaluator(df, metric, pred_list,args)
+
+    def _row_em(pred_text, gold_answer):
+        if isinstance(gold_answer, str):
+            try:
+                parsed = ast.literal_eval(gold_answer)
+                if isinstance(parsed, list):
+                    golds = [str(x) for x in parsed]
+                else:
+                    golds = [gold_answer]
+            except Exception:
+                golds = [gold_answer]
+        elif isinstance(gold_answer, list):
+            golds = [str(x) for x in gold_answer]
+        else:
+            golds = [str(gold_answer)]
+        pred_norm = normalize_answer(str(pred_text))
+        return int(any(pred_norm == normalize_answer(g) for g in golds))
     
     print('time: ',end-start)
     print('acc: ', sum(acc)/len(acc))
@@ -748,6 +805,10 @@ def main(args):
             save_data_name = 'all'
 
         used_len = min(len(pred_list), len(pred_to_train), len(acc), len(df))
+        em_list = [
+            _row_em(pred_to_train[i], df['answer'].iloc[i])
+            for i in range(used_len)
+        ]
         question_with_prompt = [prompt_function_data(q) for q in df['query'][:used_len]]
         dfdf = pd.DataFrame({
             'retr_method': [retr_method] * used_len,
@@ -756,6 +817,7 @@ def main(args):
             'pred': pred_to_train[:used_len],
             'answer': list(df['answer'][:used_len]),
             'acc': acc[:used_len],
+            'em': em_list,
         })
         if retr_method == 'skillrag':
             dfdf['initial_output'] = skillrag_initial_outputs[:used_len]
@@ -788,16 +850,20 @@ def main(args):
                 merged_df['use_for_training'] = np.where(merged_df['unstable_case'] == 1, 0, 1)
                 merged_df = merged_df.sample(frac=1, random_state=42).reset_index(drop=True)
 
-                if len(merged_df) > 500:
-                    test_size = 500
-                else:
-                    test_size = max(1, int(len(merged_df) * 0.2))
-
-                test_df = merged_df.iloc[:test_size].reset_index(drop=True)
-                train_df = merged_df.iloc[test_size:].reset_index(drop=True)
-
-                train_df.to_csv(f"dataset/{_save_path}/retrieval_qa_{model_id.split('/')[1]}_all_train_in3_.csv", index=False)
-                test_df.to_csv(f"dataset/{_save_path}/retrieval_qa_{model_id.split('/')[1]}_all_zeroshot_test_500.csv", index=False)
+                if tr_or_dev == 'train':
+                    merged_df.to_csv(
+                        f"dataset/{_save_path}/retrieval_qa_{model_id.split('/')[1]}_{dataset_name}_all_train_in3_.csv",
+                        index=False
+                    )
+                elif tr_or_dev == 'dev':
+                    if len(merged_df) > 500:
+                        test_df = merged_df.iloc[:500].reset_index(drop=True)
+                    else:
+                        test_df = merged_df.reset_index(drop=True)
+                    test_df.to_csv(
+                        f"dataset/{_save_path}/retrieval_qa_{model_id.split('/')[1]}_{dataset_name}_all_zeroshot_test_500.csv",
+                        index=False
+                    )
         
         print('making retrieval dataset is end !!!')
     
@@ -845,6 +911,7 @@ if __name__ =='__main__':
     parser.add_argument('--ablation', type=int, default=0) # 0-> 0 이후 모든 값 더하기
     parser.add_argument('--threshold', type=float, default=0.0)
     parser.add_argument('--steps_limit', type=int, default=10000) # 1500 - 3 
+    parser.add_argument('--max_retrieval_rounds', type=int, default=3)
     
     parser.add_argument('--is_sparse', action='store_true')
     parser.add_argument('--is_cot', action='store_true')
