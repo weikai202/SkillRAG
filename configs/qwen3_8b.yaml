@@ -6,8 +6,8 @@ retrieval:
   is_cot: true
 
 build_dataset:
-  datasets: [trivia, hotpotqa, nq]
-  steps_limit_train: 3200
+  datasets: [nq, musique, hotpotqa, trivia, 2wikimultihopqa]
+  steps_limit_train: 3000
   steps_limit_dev: 500
   sep_number: 0
 
@@ -26,7 +26,7 @@ prober:
 
 evaluate:
   datasets: [nq, musique, hotpotqa, trivia, 2wikimultihopqa]
-  methods: [probing, skillrag]
+  methods: [none, simple, probing, skillrag]
   steps_limit: 500
   threshold: 0.0
   position: resid_post
