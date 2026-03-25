@@ -1,12 +1,14 @@
 model:
   id: google/gemma-2-9b-it
 
+index_datasets: [nq, musique, hotpotqa, trivia, 2wikimultihopqa]
+
 retrieval:
   is_sparse: true
   is_cot: true
 
 build_dataset:
-  datasets: [nq, musique, hotpotqa, trivia, 2wikimultihopqa]
+  datasets: [nq, hotpotqa, trivia]
   steps_limit_train: 3000
   steps_limit_dev: 500
   sep_number: 0

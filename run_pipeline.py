@@ -138,6 +138,7 @@ def main() -> None:
     model_id = cfg["model"]["id"]
     model_short = model_id.split("/")[-1]
     datasets_build = cfg["build_dataset"]["datasets"]
+    index_datasets = cfg.get("index_datasets", datasets_build)
     steps_train = cfg["build_dataset"]["steps_limit_train"]
     steps_dev = cfg["build_dataset"]["steps_limit_dev"]
     sep_number = cfg["build_dataset"].get("sep_number", 0)
@@ -158,7 +159,7 @@ def main() -> None:
     run_logs: List[Dict[str, Any]] = []
 
     if build_index:
-        for dataset_name in datasets_build:
+        for dataset_name in index_datasets:
             run_logs.append(
                 run_cmd(
                     ["python", "make_indexer.py", "--dataset_name", dataset_name, "--is_sparse"],
