@@ -32,6 +32,21 @@ bash download/download.sh
 bash download/raw_data.sh
 ```
 
+
+## Whole Pipeline
+Change the modelID for different models.
+---
+python run_pipeline.py --config configs/gemma2_9b.yaml
+---
+
+
+
+
+
+
+
+
+
 ## Creating a BM25 Retrieval Index Based on Llama Index
 ```bash
 bash make_index.sh
