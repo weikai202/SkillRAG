@@ -1,0 +1,14 @@
+{
+  "count": 500,
+  "acc": 0.054,
+  "em": 0.022,
+  "f1": 0.1007,
+  "avg_retrieval_count": 0.0,
+  "dataset_name": "musique",
+  "method": "flare",
+  "model_id": "unsloth/gemma-2-9b-it",
+  "split": "dev",
+  "limit": 500,
+  "top_k": 5,
+  "max_rounds": 3
+}

@@ -1,0 +1,14 @@
+{
+  "count": 500,
+  "acc": 0.262,
+  "em": 0.224,
+  "f1": 0.2836,
+  "avg_retrieval_count": 0.0,
+  "dataset_name": "2wikimultihopqa",
+  "method": "dragin",
+  "model_id": "Qwen/Qwen3-8B",
+  "split": "dev",
+  "limit": 500,
+  "top_k": 5,
+  "max_rounds": 3
+}

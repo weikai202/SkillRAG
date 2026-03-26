@@ -1,0 +1,14 @@
+{
+  "count": 500,
+  "acc": 0.252,
+  "em": 0.042,
+  "f1": 0.1997,
+  "avg_retrieval_count": 0.012,
+  "dataset_name": "2wikimultihopqa",
+  "method": "dragin",
+  "model_id": "NousResearch/Meta-Llama-3-8B-Instruct",
+  "split": "dev",
+  "limit": 500,
+  "top_k": 5,
+  "max_rounds": 3
+}

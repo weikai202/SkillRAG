@@ -1,0 +1,14 @@
+{
+  "count": 500,
+  "acc": 0.134,
+  "em": 0.06,
+  "f1": 0.1328,
+  "avg_retrieval_count": 1.068,
+  "dataset_name": "musique",
+  "method": "adaptive",
+  "model_id": "Qwen/Qwen3-8B",
+  "split": "dev",
+  "limit": 500,
+  "top_k": 5,
+  "max_rounds": 3
+}

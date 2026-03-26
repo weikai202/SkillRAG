@@ -1,0 +1,14 @@
+{
+  "count": 500,
+  "acc": 0.036,
+  "em": 0.008,
+  "f1": 0.0902,
+  "avg_retrieval_count": 0.0,
+  "dataset_name": "musique",
+  "method": "flare",
+  "model_id": "Qwen/Qwen3-8B",
+  "split": "dev",
+  "limit": 500,
+  "top_k": 5,
+  "max_rounds": 3
+}

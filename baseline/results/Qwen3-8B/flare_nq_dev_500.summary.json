@@ -1,0 +1,14 @@
+{
+  "count": 500,
+  "acc": 0.226,
+  "em": 0.144,
+  "f1": 0.2544,
+  "avg_retrieval_count": 0.0,
+  "dataset_name": "nq",
+  "method": "flare",
+  "model_id": "Qwen/Qwen3-8B",
+  "split": "dev",
+  "limit": 500,
+  "top_k": 5,
+  "max_rounds": 3
+}

@@ -1,0 +1,14 @@
+{
+  "count": 500,
+  "acc": 0.372,
+  "em": 0.152,
+  "f1": 0.3459,
+  "avg_retrieval_count": 0.916,
+  "dataset_name": "nq",
+  "method": "adaptive",
+  "model_id": "unsloth/gemma-2-9b-it",
+  "split": "dev",
+  "limit": 500,
+  "top_k": 5,
+  "max_rounds": 3
+}

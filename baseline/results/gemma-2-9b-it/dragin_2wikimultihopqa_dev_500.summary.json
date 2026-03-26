@@ -1,0 +1,14 @@
+{
+  "count": 500,
+  "acc": 0.31,
+  "em": 0.172,
+  "f1": 0.2819,
+  "avg_retrieval_count": 0.0,
+  "dataset_name": "2wikimultihopqa",
+  "method": "dragin",
+  "model_id": "unsloth/gemma-2-9b-it",
+  "split": "dev",
+  "limit": 500,
+  "top_k": 5,
+  "max_rounds": 3
+}

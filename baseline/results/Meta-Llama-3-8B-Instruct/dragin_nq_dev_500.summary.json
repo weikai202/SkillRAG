@@ -1,0 +1,14 @@
+{
+  "count": 500,
+  "acc": 0.304,
+  "em": 0.044,
+  "f1": 0.2549,
+  "avg_retrieval_count": 0.004,
+  "dataset_name": "nq",
+  "method": "dragin",
+  "model_id": "NousResearch/Meta-Llama-3-8B-Instruct",
+  "split": "dev",
+  "limit": 500,
+  "top_k": 5,
+  "max_rounds": 3
+}

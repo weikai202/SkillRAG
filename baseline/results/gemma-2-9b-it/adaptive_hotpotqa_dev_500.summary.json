@@ -1,0 +1,14 @@
+{
+  "count": 500,
+  "acc": 0.392,
+  "em": 0.172,
+  "f1": 0.3562,
+  "avg_retrieval_count": 1.17,
+  "dataset_name": "hotpotqa",
+  "method": "adaptive",
+  "model_id": "unsloth/gemma-2-9b-it",
+  "split": "dev",
+  "limit": 500,
+  "top_k": 5,
+  "max_rounds": 3
+}

@@ -1,0 +1,14 @@
+{
+  "count": 500,
+  "acc": 0.228,
+  "em": 0.146,
+  "f1": 0.2564,
+  "avg_retrieval_count": 0.002,
+  "dataset_name": "nq",
+  "method": "dragin",
+  "model_id": "Qwen/Qwen3-8B",
+  "split": "dev",
+  "limit": 500,
+  "top_k": 5,
+  "max_rounds": 3
+}
