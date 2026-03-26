@@ -35,9 +35,9 @@ bash download/raw_data.sh
 
 ## Whole Pipeline
 Change the modelID for different models.
----
+```bash
 python run_pipeline.py --config configs/gemma2_9b.yaml
----
+```
 
 
 
