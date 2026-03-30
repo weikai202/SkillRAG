@@ -9,8 +9,8 @@ retrieval:
 
 build_dataset:
   datasets: [nq, hotpotqa, trivia]
-  steps_limit_train: 3000
-  steps_limit_dev: 500
+  steps_limit_train: 1000
+  steps_limit_dev: 200
   sep_number: 0
 
 train:
@@ -29,7 +29,7 @@ prober:
 evaluate:
   datasets: [nq, musique, hotpotqa, trivia, 2wikimultihopqa]
   methods: [none, simple, probing, skillrag]
-  steps_limit: 500
+  steps_limit: 200
   threshold: 0.0
   position: resid_post
   max_retrieval_rounds: 3
