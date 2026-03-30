@@ -5,6 +5,7 @@ from argparse import Namespace
 import time
 import json
 import ast
+from datetime import datetime
 import os
 import numpy as np
 from tqdm import tqdm
@@ -772,6 +773,59 @@ def main(args):
     if 'end' not in locals():
         end = time.time()
     acc, metric, pred_to_train=evaluator(df, metric, pred_list,args)
+
+    metric_values = metric.get_metric()
+    if (args.dataset_name == 'hotpotqa') or (args.dataset_name == '2wikimultihopqa') or (args.dataset_name == 'musique') or (args.dataset_name == 'iirc'):
+        em_value = metric_values.get('title_em', None)
+        f1_value = metric_values.get('title_f1', None)
+    else:
+        em_value = metric_values.get('em', None)
+        f1_value = metric_values.get('f1', None)
+
+    def _yaml_scalar(v):
+        if isinstance(v, bool):
+            return 'true' if v else 'false'
+        if isinstance(v, (int, float)) and v is not None:
+            return str(v)
+        if v is None:
+            return 'null'
+        return json.dumps(str(v), ensure_ascii=False)
+
+    def append_run_metric_yaml():
+        save_path = "result"
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)
+        yaml_path = os.path.join(save_path, "metrics_log.yaml")
+        is_new = not os.path.exists(yaml_path)
+        with open(yaml_path, "a", encoding="utf-8") as f:
+            if is_new:
+                f.write("runs:\n")
+            fields = {
+                "timestamp": datetime.now().isoformat(),
+                "model_id": model_id,
+                "dataset_name": dataset_name,
+                "retr_method": retr_method,
+                "tr_or_dev": tr_or_dev,
+                "steps_limit": steps_limit,
+                "threshold": threshold,
+                "position": position,
+                "ds": _ds,
+                "is_sparse": is_sparse,
+                "is_cot": is_cot,
+                "acc": (sum(acc) / len(acc)) if len(acc) > 0 else None,
+                "em": em_value,
+                "f1": f1_value,
+                "extracting_cot_qa": args.extracting_cot_qa,
+            }
+            first = True
+            for k, v in fields.items():
+                if first:
+                    f.write(f"- {k}: {_yaml_scalar(v)}\n")
+                    first = False
+                else:
+                    f.write(f"  {k}: {_yaml_scalar(v)}\n")
+
+    append_run_metric_yaml()
 
     def _row_em(pred_text, gold_answer):
         if isinstance(gold_answer, str):
