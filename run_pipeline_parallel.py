@@ -64,6 +64,17 @@ def run_cmd(cmd: List[str], dry_run: bool, gpu: Optional[int] = None) -> Dict[st
     env = os.environ.copy()
     if gpu is not None:
         env["CUDA_VISIBLE_DEVICES"] = str(gpu)
+    # Ensure HuggingFace token is available to child processes
+    if "HF_TOKEN" not in env:
+        for token_path in [
+            os.path.expanduser("~/.cache/huggingface/token"),
+            os.path.join(os.environ.get("HF_HOME", ""), "token"),
+            "/workspace/.hf_home/token",
+        ]:
+            if token_path and os.path.exists(token_path):
+                with open(token_path) as f:
+                    env["HF_TOKEN"] = f.read().strip()
+                break
     # wandb may not be authenticated; don't let it block training
     env.setdefault("WANDB_MODE", os.environ.get("WANDB_MODE", "online"))
     proc = subprocess.run(cmd, check=False, env=env)
@@ -247,22 +258,11 @@ def main() -> None:
             "--model_id", model_id,
         ]
 
-    # Threading event to stagger model loads — the first GPU signals
-    # after its model is loaded (i.e. after the first subprocess has
-    # been running for a short while), so the second GPU doesn't
-    # compete for CPU RAM during the load phase.
-    import threading
-    _model_load_gate = threading.Event()
-
-    def _run_build_for_datasets(ds_list, gpu, label, wait_for_gate=False):
+    def _run_build_for_datasets(ds_list, gpu, label):
         """Run build phase for a list of datasets on a specific GPU, sequentially."""
-        if wait_for_gate:
-            print(f"  [{label}] Waiting for first GPU to finish model loading...")
-            _model_load_gate.wait()
-            print(f"  [{label}] Gate open — starting model load on GPU:{gpu}")
         results = []
-        first_job = True
         for dataset_name in ds_list:
+            ds_failed = False
             for retr_method in ["simple", "none"]:
                 for tr_or_dev, sl in [("train", steps_train), ("dev", steps_dev)]:
                     r = run_cmd(
@@ -270,20 +270,18 @@ def main() -> None:
                         dry_run=False, gpu=gpu,
                     )
                     results.append(r)
-                    if first_job and not wait_for_gate:
-                        # First subprocess on the leading GPU has finished,
-                        # meaning its model is loaded and on GPU.  Signal
-                        # the second GPU that it is safe to start loading.
-                        _model_load_gate.set()
-                        first_job = False
-            # Balance immediately after this dataset's build completes
-            r = run_cmd(
-                ["python", "balance_train_dataset.py", "--model_id", model_id, "--dataset_name", dataset_name],
-                dry_run=False,
-            )
-            results.append(r)
-        # Ensure the gate is set even if ds_list was empty
-        _model_load_gate.set()
+                    if r["returncode"] != 0:
+                        print(f"  [{label}] FAILED: {r['command']} (exit {r['returncode']})")
+                        ds_failed = True
+            # Balance only if all 4 exp_rag jobs for this dataset succeeded
+            if ds_failed:
+                print(f"  [{label}] Skipping balance for {dataset_name} due to prior failures")
+            else:
+                r = run_cmd(
+                    ["python", "balance_train_dataset.py", "--model_id", model_id, "--dataset_name", dataset_name],
+                    dry_run=False,
+                )
+                results.append(r)
         return results
 
     if args.dry_run:
@@ -304,8 +302,8 @@ def main() -> None:
         print(f"{'=' * 60}")
         t0 = time.time()
         with ThreadPoolExecutor(max_workers=2) as pool:
-            fut_a = pool.submit(_run_build_for_datasets, gpu_a_datasets, gpu_a, "GPU-A", wait_for_gate=False)
-            fut_b = pool.submit(_run_build_for_datasets, gpu_b_datasets, gpu_b, "GPU-B", wait_for_gate=True)
+            fut_a = pool.submit(_run_build_for_datasets, gpu_a_datasets, gpu_a, "GPU-A")
+            fut_b = pool.submit(_run_build_for_datasets, gpu_b_datasets, gpu_b, "GPU-B")
             run_logs.extend(fut_a.result())
             run_logs.extend(fut_b.result())
         print(f"[DONE] Build phase completed in {time.time() - t0:.1f}s\n")
@@ -347,25 +345,16 @@ def main() -> None:
             # Launch layers in parallel across 2 GPUs.
             # Different layers write to different checkpoint files (l{layer} in path),
             # so no conflict between layers.
-            _train_gate = threading.Event()
-
-            def _run_train_layers(layer_list, gpu, wait_for_gate=False):
-                if wait_for_gate:
-                    _train_gate.wait()
+            def _run_train_layers(layer_list, gpu):
                 results = []
-                first_job = True
                 for layer in layer_list:
                     results.append(run_cmd(_train_cmd(layer, gpu), dry_run=False, gpu=gpu))
-                    if first_job and not wait_for_gate:
-                        _train_gate.set()
-                        first_job = False
-                _train_gate.set()  # ensure gate is set even if list was empty
                 return results
 
             print(f"\n  Training {dataset_name}: layers {layers_a} on GPU:{gpu_a}, {layers_b} on GPU:{gpu_b}")
             with ThreadPoolExecutor(max_workers=2) as pool:
-                fut_a = pool.submit(_run_train_layers, layers_a, gpu_a, wait_for_gate=False)
-                fut_b = pool.submit(_run_train_layers, layers_b, gpu_b, wait_for_gate=True)
+                fut_a = pool.submit(_run_train_layers, layers_a, gpu_a)
+                fut_b = pool.submit(_run_train_layers, layers_b, gpu_b)
                 run_logs.extend(fut_a.result())
                 run_logs.extend(fut_b.result())
 
@@ -410,24 +399,15 @@ def main() -> None:
         print(f"{'=' * 60}")
         t0 = time.time()
 
-        _eval_gate = threading.Event()
-
-        def _run_eval_jobs(jobs, gpu, wait_for_gate=False):
-            if wait_for_gate:
-                _eval_gate.wait()
+        def _run_eval_jobs(jobs, gpu):
             results = []
-            first_job = True
             for d, m in jobs:
                 results.append(run_cmd(_eval_cmd(d, m), dry_run=False, gpu=gpu))
-                if first_job and not wait_for_gate:
-                    _eval_gate.set()
-                    first_job = False
-            _eval_gate.set()
             return results
 
         with ThreadPoolExecutor(max_workers=2) as pool:
-            fut_a = pool.submit(_run_eval_jobs, eval_jobs_a, gpu_a, wait_for_gate=False)
-            fut_b = pool.submit(_run_eval_jobs, eval_jobs_b, gpu_b, wait_for_gate=True)
+            fut_a = pool.submit(_run_eval_jobs, eval_jobs_a, gpu_a)
+            fut_b = pool.submit(_run_eval_jobs, eval_jobs_b, gpu_b)
             run_logs.extend(fut_a.result())
             run_logs.extend(fut_b.result())
         print(f"[DONE] Evaluation completed in {time.time() - t0:.1f}s\n")

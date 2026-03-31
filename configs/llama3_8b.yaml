@@ -2,6 +2,7 @@ model:
   id: meta-llama/Meta-Llama-3-8B-Instruct
 
 index_datasets: [nq, musique, hotpotqa, trivia, 2wikimultihopqa]
+build_index: false
 
 retrieval:
   is_sparse: true
