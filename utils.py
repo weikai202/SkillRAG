@@ -296,7 +296,7 @@ def _default_probe_layers(model_id: str):
     if model_id == 'google/gemma-2b':
         return [6, 8, 10, 12, 14, 16]
     if model_id == 'meta-llama/Meta-Llama-3-8B-Instruct':
-        return [12, 16, 20, 24, 28, 32]
+        return [12, 16, 20, 24, 28, 31]
     if model_id == 'Qwen/Qwen3-8B':
         return [12, 16, 20, 24, 28, 32, 36]
     if model_id == 'google/gemma-2-9b-it':
