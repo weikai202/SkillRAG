@@ -2,43 +2,77 @@
 
 ## Abstract
 
-## Installation
+## Environment Setup
+Run the following command in the project root to automatically create and validate the environment:
+
 ```bash
-conda create -n probing python=3.10
-conda activate probing
-
-pip install git+https://github.com/jbloomAus/SAELens
-pip install torch
-pip install einops
-pip install datasets
-pip install tqdm
-pip install wandb
-pip install faiss-cpu
-pip install ir-datasets
-pip install -U sentence-transformers
-pip install nltk
-pip install llama-index
-pip install ftfy
-pip install llama-index-retrievers-bm25
-pip install base58
-pip install spacy
-
-python -m spacy download en_core_web_sm
+bash setup_probing_env.sh
 ```
+This script will:
+- create a `conda` environment named `probing` (Python 3.10),
+- install all required dependencies,
+- download `en_core_web_sm`,
+- run a sanity check for key packages and runtime readiness.
 ## Datasets
-You can download datasets as follows:
+Download all required datasets and processed raw files with:
 ```bash
 bash download/download.sh
 bash download/raw_data.sh
 ```
 
+After downloading, you can quickly verify key files:
+```bash
+ls raw_data/nq/biencoder-nq-train.json
+ls raw_data/nq/biencoder-nq-dev.json
+```
+
+## Quick Start
+Minimal reproducible workflow:
+
+```bash
+# 1) environment
+bash setup_probing_env.sh
+
+# 2) download data
+bash download/download.sh
+bash download/raw_data.sh
+
+# 3) verify pipeline commands (no execution)
+python run_pipeline.py --config configs/gemma2_9b.yaml --dry_run
+
+# 4) run full pipeline
+python run_pipeline.py --config configs/gemma2_9b.yaml
+```
 
 ## Whole Pipeline
-Change the modelID for different models.
+Run full pipeline:
 ```bash
 python run_pipeline.py --config configs/gemma2_9b.yaml
 ```
 
+Dry-run only (print commands without execution):
+```bash
+python run_pipeline.py --config configs/gemma2_9b.yaml --dry_run
+python run_pipeline.py --config configs/llama3_8b.yaml --dry_run
+python run_pipeline.py --config configs/qwen3_8b.yaml --dry_run
+```
+
+Current config behavior:
+- Build index on 5 datasets: `nq, musique, hotpotqa, trivia, 2wikimultihopqa`
+- Build/train prober on 3 datasets: `nq, hotpotqa, trivia`
+- Evaluate `none/simple/probing/skillrag` on 5 datasets
+- `wandb` disabled in training by default (`--disable_wandb`)
+
+Prober checkpoint selection during evaluation:
+- For `nq/hotpotqa/trivia`: pass `--prober_train_dataset` as the same dataset
+- For `musique/2wikimultihopqa`: no `--prober_train_dataset` argument (default fallback to `nq`)
+
+Main outputs:
+- Prober checkpoints: `ckpt/_3/<dataset_name>/...` and `pckpt/_3/<dataset_name>/...`
+- Per-sample generation csv: `dataset/{2b|8b|9b}/retrieval_qa_*.csv`
+- Aggregated eval metrics csv: `result/*.csv`
+- Run report yaml: `reports/*.yaml`
+- Appended metrics log: `result/metrics_log.yaml`
 
 
 

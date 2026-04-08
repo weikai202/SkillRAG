@@ -1,13 +1,15 @@
 model:
   id: google/gemma-2b
 
+index_datasets: [nq, musique, hotpotqa, trivia, 2wikimultihopqa]
+
 retrieval:
   is_sparse: true
   is_cot: true
 
 build_dataset:
-  datasets: [trivia, hotpotqa, nq]
-  steps_limit_train: 3200
+  datasets: [nq, hotpotqa, trivia]
+  steps_limit_train: 3000
   steps_limit_dev: 500
   sep_number: 0
 
@@ -19,14 +21,16 @@ train:
   layers: [6, 8, 10, 12, 14, 16]
   device: cuda:0
   train_ds_ratio: 1.0
+  disable_wandb: true
 
 prober:
   ds: 3
   ablation: 0
+  ckpt_dataset: nq
 
 evaluate:
   datasets: [nq, musique, hotpotqa, trivia, 2wikimultihopqa]
-  methods: [probing, skillrag]
+  methods: [none, simple, probing, skillrag]
   steps_limit: 500
   threshold: 0.0
   position: resid_post

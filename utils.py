@@ -280,7 +280,7 @@ def split_A(q):
     return q.split('\n')[2].replace('A','').replace(':','').strip()
 
 class Config_Maker():
-    def __init__(self, model, method, layer, position, device):
+    def __init__(self, model, method, layer, position, device, dataset_name: str = "", fallback_dataset: str = ""):
         self.method = method
         self.layer = layer
         self.position = position
@@ -288,6 +288,8 @@ class Config_Maker():
         self.d_model = model.cfg.d_model
         self.model_id = model.cfg.tokenizer_name
         self.num_classes = 2
+        self.dataset_name = dataset_name
+        self.fallback_dataset = fallback_dataset
 
 def _model_short_name(model_id: str) -> str:
     return model_id.split('/')[-1]
@@ -321,6 +323,7 @@ def load_prober(_ds, cfg):
         prober.load_state_dict(torch.load(f'ckpt/probing_ckpt/Mistral-7B-Instruct-v0.1_{cfg.method}_probe_2_l{cfg.layer}_{cfg.position}_1.pt'))
     elif cfg.model_id in ['google/gemma-2b', 'meta-llama/Meta-Llama-3-8B-Instruct', 'Qwen/Qwen3-8B', 'google/gemma-2-9b-it']:
         model_short = _model_short_name(cfg.model_id)
+        dataset_prefix = f"{cfg.dataset_name}/" if getattr(cfg, "dataset_name", "") else ""
         # prober.load_state_dict(torch.load(f'ckpt/prob_model_cot_v2/gemma-2b_v2_linear9995_{cfg.method}_2_l{cfg.layer}_{cfg.position}_1.pt')) # v2 
         if _ds == 25:
             prober.load_state_dict(torch.load(f'ckpt/_25/0.25_{model_short}_{cfg.method}_2_l{cfg.layer}_{cfg.position}_ep1.pt')) # v1
@@ -331,7 +334,17 @@ def load_prober(_ds, cfg):
         elif _ds == 777:
             prober.load_state_dict(torch.load(f'ckpt/_75_full/0.75_{model_short}_{cfg.method}_2_l{cfg.layer}_{cfg.position}_ep.pt')) # v1
         elif _ds == 3:
-            prober.load_state_dict(torch.load(f'ckpt/_3/in3_1.0_{model_short}_{cfg.method}_2_l{cfg.layer}_{cfg.position}_ep1.pt')) # v1
+            fallback_prefix = f"{cfg.fallback_dataset}/" if getattr(cfg, "fallback_dataset", "") else ""
+            dataset_ckpt = f'ckpt/_3/{dataset_prefix}in3_1.0_{model_short}_{cfg.method}_2_l{cfg.layer}_{cfg.position}_ep1.pt'
+            fallback_ckpt = f'ckpt/_3/{fallback_prefix}in3_1.0_{model_short}_{cfg.method}_2_l{cfg.layer}_{cfg.position}_ep1.pt'
+            legacy_ckpt = f'ckpt/_3/in3_1.0_{model_short}_{cfg.method}_2_l{cfg.layer}_{cfg.position}_ep1.pt'
+            if os.path.exists(dataset_ckpt):
+                prober.load_state_dict(torch.load(dataset_ckpt))
+            elif fallback_prefix and os.path.exists(fallback_ckpt):
+                print(f"[INFO] Missing dataset-specific ckpt, fallback to: {fallback_ckpt}")
+                prober.load_state_dict(torch.load(fallback_ckpt))
+            else:
+                prober.load_state_dict(torch.load(legacy_ckpt)) # backward compatibility
         elif _ds == 333:
             prober.load_state_dict(torch.load(f'ckpt/_3_3/in3_0.33_{model_short}_{cfg.method}_2_l{cfg.layer}_{cfg.position}_ep.pt')) # v1
         elif _ds == 366:
@@ -400,9 +413,9 @@ def batch_topk_sim(model_retr, query: str, index: faiss, k: int):
 def load_prober_cfg_gemma_2b(model, config, position, device, start, end, step):
     return [config(model, 'tokens_mean', j, position, device) for j in range(start, end, step)]    
 
-def load_prober_cfg_for_model(model, config, position, device):
+def load_prober_cfg_for_model(model, config, position, device, dataset_name: str = "", fallback_dataset: str = ""):
     layers = _default_probe_layers(model.cfg.tokenizer_name)
-    return [config(model, 'tokens_mean', j, position, device) for j in layers]
+    return [config(model, 'tokens_mean', j, position, device, dataset_name, fallback_dataset) for j in layers]
 
 def load_prober_models(_ds, cfg_list):
     probers = [load_prober(_ds, cfg) for cfg in cfg_list]

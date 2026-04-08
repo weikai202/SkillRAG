@@ -22,11 +22,17 @@ def set_seed(seed):
     np.random.seed(seed)
     
 def main(args):
-    wandb.init(
-        project='probing_train_llama3_8b_final_in3', # 'probing_train_cot_7b_v1'
-        entity='weikai1-university-of-michigan',
-        name=f"{args.train_ds_ratio}_{args.model_id.split('/')[1]}_linear999_{args.method}_{args.layer}_{args.batch_size}"
-    )
+    use_wandb = not args.disable_wandb
+    if use_wandb:
+        wandb.init(
+            project='probing_train_llama3_8b_final_in3', # 'probing_train_cot_7b_v1'
+            entity='weikai1-university-of-michigan',
+            name=f"{args.train_ds_ratio}_{args.model_id.split('/')[1]}_linear999_{args.method}_{args.layer}_{args.batch_size}"
+        )
+
+    def wb_log(payload):
+        if use_wandb:
+            wandb.log(payload)
 
     set_seed(args.layer)    
     train_ratio = args.train_ds_ratio
@@ -294,7 +300,7 @@ def main(args):
         
         probe_bi_l16_resid_post.train()
         loss1s,loss2s,loss3s,loss4s = [],[],[],[]
-        for num, batch in enumerate(tqdm(train_dataloader)):
+        for num, batch in enumerate(tqdm(train_dataloader, desc=f"Train e{epoch+1}/{epochs}", dynamic_ncols=True, leave=False)):
             with torch.no_grad():
                 _, cache = model.run_with_cache(batch['input_tokens'], names_filter = lambda name: name.startswith(f"blocks.{layer}")) # , do_sample=False
             
@@ -320,14 +326,14 @@ def main(args):
             
             loss4, lr4=function_fn(model = probe_bi_l16_resid_post, optim = optimizer_resid_post, scheduler =scheduler_resid_post,
                                 activations=activations_resid_post, labels=labels, pred_lens=pred_lens, num = num, accumulation_step=3)
-            wandb.log({
+            wb_log({
                 "loss2": loss2,
                 "loss4": loss4,
                 "learning_rate": lr2
             })
             loss2s.append(loss2)
             loss4s.append(loss4)
-            if num % 200 == 0:
+            if (num + 1) % 50 == 0:
                 print('loss: ',sum(loss2s)/len(loss2s), sum(loss4s)/len(loss4s))
                 loss1s,loss2s,loss3s,loss4s = [],[],[],[]
 
@@ -336,7 +342,7 @@ def main(args):
         total_len = 0
         probe_bi_l16_resid_mid.eval()
         probe_bi_l16_resid_post.eval()
-        for num, batch in enumerate(tqdm(dev_dataloader)):
+        for num, batch in enumerate(tqdm(dev_dataloader, desc=f"Eval e{epoch+1}/{epochs}", dynamic_ncols=True, leave=False)):
             with torch.no_grad():
 
                 _, cache = model.run_with_cache(batch['input_tokens'], names_filter = lambda name: name.startswith(f"blocks.{layer}"))
@@ -363,7 +369,7 @@ def main(args):
 
                 avg_acc2.append(acc2 * len_label2)
                 avg_acc4.append(acc4 * len_label4)
-                wandb.log({
+                wb_log({
                     "eval_loss2": loss2,
                     "eval_loss4": loss4,
                 })
@@ -371,7 +377,7 @@ def main(args):
                 break
         total_acc2=round(sum(avg_acc2)/total_len, 4)
         total_acc4=round(sum(avg_acc4)/total_len, 4)
-        wandb.log({
+        wb_log({
             "total_acc2": total_acc2,
             "total_acc4": total_acc4,
         })
@@ -379,12 +385,20 @@ def main(args):
         print(f'training info: layer:{args.layer}, method: {args.method}, lr: {args.lr}, batch: {args.batch_size}')
 
 
-        os.makedirs("pckpt/_3", exist_ok=True)
-        os.makedirs("ckpt/_3", exist_ok=True)
-        mid_ckpt_path = f"pckpt/_3/in3_{train_ratio}_{args.model_id.split('/')[1]}_{method}_{num_classes}_l{layer}_resid_mid_ep{epoch}.pt"
-        post_ckpt_path = f"ckpt/_3/in3_{train_ratio}_{args.model_id.split('/')[1]}_{method}_{num_classes}_l{layer}_resid_post_ep{epoch}.pt"
+        os.makedirs(f"pckpt/_3/{dataset_name}", exist_ok=True)
+        os.makedirs(f"ckpt/_3/{dataset_name}", exist_ok=True)
+        os.makedirs("pckpt/_3", exist_ok=True)  # legacy path
+        os.makedirs("ckpt/_3", exist_ok=True)   # legacy path
+        mid_ckpt_name = f"in3_{train_ratio}_{args.model_id.split('/')[1]}_{method}_{num_classes}_l{layer}_resid_mid_ep{epoch}.pt"
+        post_ckpt_name = f"in3_{train_ratio}_{args.model_id.split('/')[1]}_{method}_{num_classes}_l{layer}_resid_post_ep{epoch}.pt"
+        mid_ckpt_path = f"pckpt/_3/{dataset_name}/{mid_ckpt_name}"
+        post_ckpt_path = f"ckpt/_3/{dataset_name}/{post_ckpt_name}"
+        # Save dataset-specific ckpt (independent versions)
         torch.save(probe_bi_l16_resid_mid.to('cpu').state_dict(), mid_ckpt_path)
         torch.save(probe_bi_l16_resid_post.to('cpu').state_dict(), post_ckpt_path)
+        # Save legacy flat path for backward compatibility
+        torch.save(probe_bi_l16_resid_mid.to('cpu').state_dict(), f"pckpt/_3/{mid_ckpt_name}")
+        torch.save(probe_bi_l16_resid_post.to('cpu').state_dict(), f"ckpt/_3/{post_ckpt_name}")
 
         if max_acc2 < total_acc2:
             max_acc2 = total_acc2
@@ -405,6 +419,7 @@ if __name__ == '__main__':
     parser.add_argument('--device', type=str, default='cuda:0')
     parser.add_argument('--model_id', default = 'meta-llama/Meta-Llama-3-8B-Instruct')
     parser.add_argument('--dataset_name', type=str, default='nq')
+    parser.add_argument('--disable_wandb', action='store_true')
     args = parser.parse_args()
     main(args)
 '''

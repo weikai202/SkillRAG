@@ -7,15 +7,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
+from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
-
-try:
-    import hdbscan  # type: ignore
-except ImportError as exc:
-    raise ImportError(
-        "hdbscan is required. Install with: pip install hdbscan"
-    ) from exc
 
 
 def pool_hidden_state(hidden: torch.Tensor, method: str) -> np.ndarray:
@@ -120,11 +114,7 @@ def main() -> None:
     X_for_cluster = PCA(n_components=pca_dim, random_state=42).fit_transform(X)
     X_2d = PCA(n_components=2, random_state=42).fit_transform(X_for_cluster)
 
-    clusterer = hdbscan.HDBSCAN(
-        min_cluster_size=args.min_cluster_size,
-        min_samples=args.min_samples,
-        metric="euclidean",
-    )
+    clusterer = KMeans(n_clusters=2, random_state=42, n_init=10)
     labels = clusterer.fit_predict(X_for_cluster)
 
     df = pd.DataFrame(
@@ -142,7 +132,7 @@ def main() -> None:
         }
     )
 
-    csv_path = output_dir / "hiddenstate_hdbscan_points.csv"
+    csv_path = output_dir / "hiddenstate_2cluster_points.csv"
     df.to_csv(csv_path, index=False)
 
     # Plot
@@ -151,19 +141,19 @@ def main() -> None:
     cmap = plt.cm.get_cmap("tab20", max(len(unique_labels), 1))
     for i, label in enumerate(unique_labels):
         sub = df[df["cluster"] == label]
-        name = "noise(-1)" if label == -1 else f"cluster_{label}"
+        name = f"cluster_{label}"
         plt.scatter(sub["x"], sub["y"], s=24, alpha=0.8, label=name, color=cmap(i))
-    plt.title("HDBSCAN Clusters of Trajectory Hidden States (2D PCA)")
+    plt.title("2-Cluster KMeans of Trajectory Hidden States (2D PCA)")
     plt.xlabel("PC1")
     plt.ylabel("PC2")
     plt.legend(loc="best", fontsize=8)
     plt.tight_layout()
-    fig_path = output_dir / "hiddenstate_hdbscan_plot.png"
+    fig_path = output_dir / "hiddenstate_2cluster_plot.png"
     plt.savefig(fig_path, dpi=180)
     plt.close()
 
     summary = df["cluster"].value_counts().sort_index()
-    summary_path = output_dir / "hiddenstate_hdbscan_summary.txt"
+    summary_path = output_dir / "hiddenstate_2cluster_summary.txt"
     with open(summary_path, "w", encoding="utf-8") as f:
         f.write(f"num_points={len(df)}\n")
         f.write(f"num_clusters(excluding noise)={len([c for c in unique_labels if c != -1])}\n")

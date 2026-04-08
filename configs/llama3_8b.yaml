@@ -21,10 +21,12 @@ train:
   layers: [12, 16, 20, 24, 28, 32]
   device: cuda:0
   train_ds_ratio: 1.0
+  disable_wandb: true
 
 prober:
   ds: 3
   ablation: 0
+  ckpt_dataset: nq
 
 evaluate:
   datasets: [nq, musique, hotpotqa, trivia, 2wikimultihopqa]

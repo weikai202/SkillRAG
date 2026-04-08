@@ -68,7 +68,7 @@ class CustomHookedTransformer(HookedTransformer):
         prepend_bos: Optional[bool] = USE_DEFAULT_VALUE,
         padding_side: Optional[Literal["left", "right"]] = USE_DEFAULT_VALUE,
         return_type: Optional[str] = "input",
-        verbose: bool = True,
+        verbose: bool = False,
         stop_tokens: Optional[List[str]] = None,
         stop_tokenss: Optional[List[str]] = None,
     ) -> Union[Int[torch.Tensor, "batch pos_plus_new_tokens"], str]:
@@ -228,6 +228,8 @@ def main(args):
     model_id = args.model_id
     tr_or_dev = args.tr_or_dev
     _ds = args.ds # 25, 50, 75, 1000, else
+    prober_dataset_primary = dataset_name
+    prober_dataset_fallback = args.prober_train_dataset
     metric = EmF1Metric()
     print('*'*70)
     print(f"threshold: {threshold}, retr_method: {retr_method}, position: {position},\ndataset_name: {dataset_name}, model_id: {model_id}, steps_limit: {steps_limit} \n ablation: {args.ablation}, prober_ds_len: {_ds}")
@@ -279,7 +281,7 @@ def main(args):
         with open(path, 'r', encoding='utf-8-sig') as f:  #문제
             js = json.load(f) 
         if dataset_name == 'iirc':
-            for tmp in tqdm(js):
+            for tmp in tqdm(js, desc="Parse iirc", dynamic_ncols=True):
                 for example in tmp['questions']:
                     qid = example["qid"]
                     question = example['question']
@@ -339,7 +341,11 @@ def main(args):
 
 
         if model_id in SUPPORTED_PROBER_MODELS:
-            cfg_list = load_prober_cfg_for_model(model, Config_Maker, position, device)
+            cfg_list = load_prober_cfg_for_model(
+                model, Config_Maker, position, device,
+                dataset_name=prober_dataset_primary,
+                fallback_dataset=prober_dataset_fallback,
+            )
             probers = load_prober_models(_ds, cfg_list)
             layer_configs = cfg_list
             
@@ -360,7 +366,11 @@ def main(args):
             add_layer_hook(model, layer_name)
     if retr_method == 'skillrag':
         if model_id in SUPPORTED_PROBER_MODELS:
-            cfg_list = load_prober_cfg_for_model(model, Config_Maker, position, device)
+            cfg_list = load_prober_cfg_for_model(
+                model, Config_Maker, position, device,
+                dataset_name=prober_dataset_primary,
+                fallback_dataset=prober_dataset_fallback,
+            )
             probers = load_prober_models(_ds, cfg_list)
             layer_configs = cfg_list
         cache = {}
@@ -386,7 +396,7 @@ def main(args):
         save_data_name = f'after{args.sep_number}'
         
     questions, answers = [], []
-    for value in tqdm(dataset):
+    for value in tqdm(dataset, desc="Prepare QA pairs", dynamic_ncols=True):
         question, answer = value['question'], value[f'{answer_name}']
         questions.append(question)
         answers.append(answer)
@@ -558,16 +568,17 @@ def main(args):
     skillrag_initial_outputs = []
     skillrag_round_logs = []
     steps = 0
+    log_interval = 20
     softmax_f = torch.nn.Softmax(dim = 1)
     if retr_method == 'probing':
         start = time.time()
-        for value in tqdm(dataloader):
+        for value in tqdm(dataloader, desc="Run probing", dynamic_ncols=True):
             cache={}
             
             retr_count = 0
             with torch.no_grad():
                 output = model.generate(value['input_ids'], do_sample=False, max_new_tokens=max_new_tokens, stop_tokenss=["Question:"])
-                if steps % 10 == 0:
+                if steps % log_interval == 0:
                     print(model.to_string(output)[0])
                 
             if model_id in SUPPORTED_PROBER_MODELS:
@@ -585,7 +596,8 @@ def main(args):
             if prediction_do_more_retriever == 0:
                 # print(model.to_string(output))
                 pred_list.append(model.to_string(output)[0])
-                print(for_set_threshold[0].item() + threshold,for_set_threshold[1].item())
+                if steps % log_interval == 0:
+                    print(for_set_threshold[0].item() + threshold,for_set_threshold[1].item())
             else:
                 while prediction_do_more_retriever == 1:
                     cache={}
@@ -623,9 +635,10 @@ def main(args):
                         else: prediction_do_more_retriever=1
                         
                         search_input_new=model.to_string(output)
-                        if (steps + 1) % 3 == 0:
+                        if (steps + 1) % log_interval == 0:
                             print(search_input_new[0])
-                        print(for_set_threshold[0].item() + threshold,for_set_threshold[1].item())
+                        if (steps + 1) % log_interval == 0:
+                            print(for_set_threshold[0].item() + threshold,for_set_threshold[1].item())
                         
                         if retr_count > 2:
                             break
@@ -635,7 +648,8 @@ def main(args):
                 
             retr_count_list.append(retr_count)
             steps += 1
-            print(steps)
+            if steps % log_interval == 0:
+                print(steps)
                 
             if steps > steps_limit:   
                 end = time.time()
@@ -643,7 +657,7 @@ def main(args):
 
     if retr_method == 'none':
         start = time.time()
-        for value in tqdm(dataloader):
+        for value in tqdm(dataloader, desc="Run none", dynamic_ncols=True):
             
             with torch.no_grad():
                 output = model.generate(value['input_ids'], do_sample=False, max_new_tokens=max_new_tokens, stop_tokenss=["Question:"])
@@ -655,7 +669,7 @@ def main(args):
             
     if retr_method =='simple':
         start = time.time()
-        for value in tqdm(dataloader):
+        for value in tqdm(dataloader, desc="Run simple", dynamic_ncols=True):
             if is_sparse:
                 retrieved_passages = bm25.retrieve(value['text'][0])
                 evidences = return_evidences(retrieved_passages)
@@ -680,7 +694,7 @@ def main(args):
     if retr_method == 'skillrag':
         start = time.time()
         max_retrieval_rounds = args.max_retrieval_rounds
-        for value in tqdm(dataloader):
+        for value in tqdm(dataloader, desc="Run skillrag", dynamic_ncols=True):
             retr_count = 0
             final_output_text = ''
             sample_round_logs = []
@@ -921,34 +935,25 @@ def main(args):
         
         print('making retrieval dataset is end !!!')
     
+    # Always write summarized result csv (not mutually exclusive with extracting_cot_qa)
+    summary_df = pd.DataFrame([[retr_method], [end-start], [sum(acc)/len(acc)], [em_value], [f1_value]]).T
+    if retr_method == 'probing':
+        dfdf_clf_pred = pd.DataFrame([str(retr_count_list)])
+        dfdf_acc = pd.DataFrame([str(acc)])
+        summary_df = pd.concat([summary_df, dfdf_clf_pred, dfdf_acc], axis=1)
+        summary_df.columns = ['retr_method', 'time', 'acc', 'em', 'f1', 'clf_pred', 'acc.1']
     else:
-        if (args.dataset_name == 'hotpotqa') or (args.dataset_name == '2wikimultihopqa') or (args.dataset_name == 'musique') or (args.dataset_name == 'iirc'):
-            df = pd.DataFrame([[retr_method], [end-start],[sum(acc)/len(acc)], [metric.get_metric()['title_em']], [metric.get_metric()['title_f1']]]).T
-            if retr_method == 'probing':
-                dfdf_clf_pred = pd.DataFrame([str(retr_count_list)])    
-                dfdf_acc = pd.DataFrame([str(acc)])
-                df = pd.concat([df, dfdf_clf_pred, dfdf_acc], axis =1)
-                df.columns = ['retr_method', 'time', 'acc', 'em', 'f1', 'clf_pred', 'acc.1']
-            else:
-                dfdf_acc = pd.DataFrame([str(acc)])
-                df = pd.concat([df, dfdf_acc], axis =1)
-                df.columns = ['retr_method', 'time', 'acc', 'em', 'f1', 'acc.1']
-            
-        else:
-            df = pd.DataFrame([[retr_method], [end-start],[sum(acc)/len(acc)], [metric.get_metric()['em']], [metric.get_metric()['f1']]]).T
-            if retr_method == 'probing':
-                dfdf_clf_pred = pd.DataFrame([str(retr_count_list)])    
-                dfdf_acc = pd.DataFrame([str(acc)])
-                df = pd.concat([df, dfdf_clf_pred, dfdf_acc], axis =1)
-                df.columns = ['retr_method', 'time', 'acc', 'em', 'f1', 'clf_pred', 'acc.1']
-            else:
-                dfdf_acc = pd.DataFrame([str(acc)])
-                df = pd.concat([df, dfdf_acc], axis =1)
-                df.columns = ['retr_method', 'time', 'acc', 'em', 'f1', 'acc.1']
-        save_path = "result"
-        if not os.path.exists(save_path):
-            os.makedirs(save_path)
-        df.to_csv(f'result/{args.ablation}_{_ds}_{retr_type}_{dataset_name}_{threshold}_{retr_method}_{savename_is_cot}_{tr_or_dev}_{steps_limit}.csv', index=False)
+        dfdf_acc = pd.DataFrame([str(acc)])
+        summary_df = pd.concat([summary_df, dfdf_acc], axis=1)
+        summary_df.columns = ['retr_method', 'time', 'acc', 'em', 'f1', 'acc.1']
+
+    save_path = "result"
+    if not os.path.exists(save_path):
+        os.makedirs(save_path)
+    summary_df.to_csv(
+        f'result/{args.ablation}_{_ds}_{retr_type}_{dataset_name}_{threshold}_{retr_method}_{savename_is_cot}_{tr_or_dev}_{steps_limit}.csv',
+        index=False
+    )
 
 if __name__ =='__main__':
     parser = argparse.ArgumentParser()
@@ -966,6 +971,7 @@ if __name__ =='__main__':
     parser.add_argument('--threshold', type=float, default=0.0)
     parser.add_argument('--steps_limit', type=int, default=10000) # 1500 - 3 
     parser.add_argument('--max_retrieval_rounds', type=int, default=3)
+    parser.add_argument('--prober_train_dataset', type=str, default='nq')
     
     parser.add_argument('--is_sparse', action='store_true')
     parser.add_argument('--is_cot', action='store_true')

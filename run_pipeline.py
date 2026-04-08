@@ -55,6 +55,7 @@ def collect_method_metrics_from_result(cfg: Dict[str, Any]) -> List[Dict[str, An
     threshold = cfg["evaluate"]["threshold"]
     steps = cfg["evaluate"]["steps_limit"]
     ds = cfg["prober"]["ds"]
+    prober_ckpt_dataset = cfg["prober"].get("ckpt_dataset", "")
     retr_type = "sparse" if cfg["retrieval"]["is_sparse"] else "dense"
     cot_name = "cot" if cfg["retrieval"]["is_cot"] else "nocot"
     ablation = cfg["prober"]["ablation"]
@@ -146,6 +147,7 @@ def main() -> None:
     is_cot = cfg["retrieval"]["is_cot"]
     build_index = cfg.get("build_index", True)
     ds = cfg["prober"]["ds"]
+    prober_ckpt_dataset = cfg["prober"].get("ckpt_dataset", "nq")
     threshold = cfg["evaluate"]["threshold"]
     position = cfg["evaluate"]["position"]
     eval_extracting_cot_qa = cfg["evaluate"].get("extracting_cot_qa", True)
@@ -155,6 +157,7 @@ def main() -> None:
     eval_max_retrieval_rounds = cfg["evaluate"].get("max_retrieval_rounds", 3)
     device = cfg["train"]["device"]
     train_ratio = cfg["train"]["train_ds_ratio"]
+    disable_wandb = cfg["train"].get("disable_wandb", True)
 
     run_logs: List[Dict[str, Any]] = []
 
@@ -258,43 +261,67 @@ def main() -> None:
                         dataset_name,
                         "--train_ds_ratio",
                         str(train_ratio),
+                        "--disable_wandb" if disable_wandb else "",
                     ],
                     args.dry_run,
                 )
             )
 
+        run_logs.append(
+            run_cmd(
+                [
+                    "python",
+                    "check_prober_ckpt.py",
+                    "--model_id",
+                    model_id,
+                    "--layers",
+                    ",".join(str(x) for x in cfg["train"]["layers"]),
+                    "--ds",
+                    str(ds),
+                    "--epoch",
+                    str(max(0, int(cfg["train"]["epochs"]) - 1)),
+                    "--dataset_name",
+                    dataset_name,
+                ],
+                args.dry_run,
+            )
+        )
+
     for dataset_name in cfg["evaluate"]["datasets"]:
         for retr_method in cfg["evaluate"]["methods"]:
+            eval_cmd = [
+                "python",
+                "exp_rag.py",
+                "--retr_method",
+                retr_method,
+                "--steps_limit",
+                str(cfg["evaluate"]["steps_limit"]),
+                "--dataset_name",
+                dataset_name,
+                "--tr_or_dev",
+                eval_tr_or_dev,
+                "--is_cot" if is_cot else "",
+                "--is_sparse" if is_sparse else "",
+                "--model_id",
+                model_id,
+                "--ds",
+                str(ds),
+                "--position",
+                position,
+                "--threshold",
+                str(threshold),
+                "--max_retrieval_rounds",
+                str(eval_max_retrieval_rounds),
+                "--extracting_cot_qa" if eval_extracting_cot_qa else "",
+                "--extract_sep" if eval_extract_sep else "",
+                "--sep_number",
+                str(eval_sep_number),
+            ]
+            if dataset_name in datasets_build:
+                eval_cmd.extend(["--prober_train_dataset", dataset_name])
             run_logs.append(
                 run_cmd(
-                    [
-                        "python",
-                        "exp_rag.py",
-                        "--retr_method",
-                        retr_method,
-                        "--steps_limit",
-                        str(cfg["evaluate"]["steps_limit"]),
-                        "--dataset_name",
-                        dataset_name,
-                        "--tr_or_dev",
-                        eval_tr_or_dev,
-                        "--is_cot" if is_cot else "",
-                        "--is_sparse" if is_sparse else "",
-                        "--model_id",
-                        model_id,
-                        "--ds",
-                        str(ds),
-                        "--position",
-                        position,
-                        "--threshold",
-                        str(threshold),
-                        "--max_retrieval_rounds",
-                        str(eval_max_retrieval_rounds),
-                        "--extracting_cot_qa" if eval_extracting_cot_qa else "",
-                        "--extract_sep" if eval_extract_sep else "",
-                        "--sep_number",
-                        str(eval_sep_number),
-                    ],
+                    eval_cmd,
                     args.dry_run,
                 )
             )
