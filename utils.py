@@ -1,4 +1,4 @@
-import re
+import re, os
 import string
 import faiss
 import numpy as np
@@ -298,9 +298,9 @@ def _default_probe_layers(model_id: str):
     if model_id == 'google/gemma-2b':
         return [6, 8, 10, 12, 14, 16]
     if model_id == 'meta-llama/Meta-Llama-3-8B-Instruct':
-        return [12, 16, 20, 24, 28, 32]
+        return [12, 16, 20, 24, 28]
     if model_id == 'Qwen/Qwen3-8B':
-        return [12, 16, 20, 24, 28, 32, 36]
+        return [12, 16, 20, 24, 28, 32]
     if model_id == 'google/gemma-2-9b-it':
         return [12, 16, 20, 24, 28, 32, 36, 40]
     if model_id == 'mistralai/Mistral-7B-Instruct-v0.1':
