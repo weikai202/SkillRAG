@@ -32,15 +32,47 @@ def load_yaml(path: str) -> Dict[str, Any]:
         return yaml.safe_load(f)
 
 
-def run_cmd(cmd: List[str], dry_run: bool) -> Dict[str, Any]:
+def run_cmd(
+    cmd: List[str],
+    dry_run: bool,
+    resume_map: Dict[str, int] = None,
+    resume_src: str = "",
+) -> Dict[str, Any]:
     cmd = [c for c in cmd if c]
     cmd_str = " ".join(cmd)
+    if resume_map is not None and resume_map.get(cmd_str) == 0:
+        print("[SKIP]", cmd_str)
+        return {"command": cmd_str, "returncode": 0, "skipped": True, "resumed_from": resume_src}
     if dry_run:
         print("[DRY-RUN]", cmd_str)
         return {"command": cmd_str, "returncode": 0}
     print("[RUN]", cmd_str)
     proc = subprocess.run(cmd, check=False)
     return {"command": cmd_str, "returncode": proc.returncode}
+
+
+def load_resume_map(path: str) -> Dict[str, int]:
+    if not path:
+        return {}
+    if yaml is None:
+        raise RuntimeError("PyYAML is required to use --resume_from")
+    with open(path, "r", encoding="utf-8") as f:
+        prior = yaml.safe_load(f) or {}
+    out: Dict[str, int] = {}
+    for entry in prior.get("commands", []) or []:
+        cmd_str = entry.get("command", "")
+        if not cmd_str:
+            continue
+        normalized = " ".join(p for p in cmd_str.split(" ") if p)
+        rc = entry.get("returncode")
+        if rc is None:
+            continue
+        # keep the latest successful outcome for a given command
+        prev = out.get(normalized)
+        if prev == 0:
+            continue
+        out[normalized] = int(rc)
+    return out
 
 
 def latest_file(pattern: str) -> str:
@@ -133,7 +165,16 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
     parser.add_argument("--dry_run", action="store_true")
+    parser.add_argument(
+        "--resume_from",
+        default="",
+        help="Path to a prior reports/*.yaml; commands whose exact string matched with returncode==0 will be skipped.",
+    )
     args = parser.parse_args()
+    resume_map = load_resume_map(args.resume_from)
+    if resume_map:
+        n_ok = sum(1 for v in resume_map.values() if v == 0)
+        print(f"[RESUME] loaded {len(resume_map)} prior commands ({n_ok} succeeded) from {args.resume_from}")
 
     cfg = load_yaml(args.config)
     model_id = cfg["model"]["id"]
@@ -167,6 +208,8 @@ def main() -> None:
                 run_cmd(
                     ["python", "make_indexer.py", "--dataset_name", dataset_name, "--is_sparse"],
                     args.dry_run,
+                    resume_map=resume_map,
+                    resume_src=args.resume_from,
                 )
             )
 
@@ -195,6 +238,8 @@ def main() -> None:
                         model_id,
                     ],
                     args.dry_run,
+                    resume_map=resume_map,
+                    resume_src=args.resume_from,
                 )
             )
             run_logs.append(
@@ -220,6 +265,8 @@ def main() -> None:
                         model_id,
                     ],
                     args.dry_run,
+                    resume_map=resume_map,
+                    resume_src=args.resume_from,
                 )
             )
 
@@ -264,6 +311,8 @@ def main() -> None:
                         "--disable_wandb" if disable_wandb else "",
                     ],
                     args.dry_run,
+                    resume_map=resume_map,
+                    resume_src=args.resume_from,
                 )
             )
 
@@ -323,6 +372,8 @@ def main() -> None:
                 run_cmd(
                     eval_cmd,
                     args.dry_run,
+                    resume_map=resume_map,
+                    resume_src=args.resume_from,
                 )
             )
 
