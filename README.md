@@ -1,6 +1,7 @@
 # SkillRAG
 
 ## Abstract
+Retrieval-Augmented Generation (RAG) grounds large language models in external knowledge by querying document collections at inference time. While adaptive retrieval has improved efficiency, existing approaches treat post-retrieval failure as a retry signal rather than a diagnostic one, leaving the structural causes of query-evidence misalignment unaddressed. Most persistent retrieval failures stem not from missing evidence but from a mismatch between the query and the evidence space. We propose \textbf{Skill-RAG}, a failure-aware RAG framework that couples a lightweight hidden-state prober with a prompt-based skill router. The prober gates retrieval at two pipeline stages. On detecting a failure, the skill router diagnoses the cause and selects one of four corrective skills: query rewriting, question decomposition, evidence focusing, or an exit skill for truly irreducible cases. Across open-domain QA and complex reasoning benchmarks, Skill-RAG improves accuracy on hard cases that persist after multi-turn retrieval, with the largest gains on out-of-distribution datasets. Representation-space analyses show that the four skills occupy structured, separable regions of the failure state space, confirming that query-evidence misalignment is typed rather than monolithic.
 
 ## Environment Setup
 Run the following command in the project root to automatically create and validate the environment:
