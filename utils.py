@@ -16,6 +16,151 @@ softmax= nn.Softmax(dim = -1)
 criterion_ce = nn.CrossEntropyLoss()
 criterion_bce = nn.BCELoss()
 
+QWEN_NO_THINK_PREFIX = "/no_think\n"
+DEFAULT_ATTN_IMPLEMENTATION = os.environ.get("SKILLRAG_ATTN_IMPLEMENTATION", "flash_attention_2")
+DEFAULT_MODEL_DTYPE = os.environ.get("SKILLRAG_MODEL_DTYPE", "bfloat16")
+
+
+def is_qwen_model(model_id: str) -> bool:
+    return str(model_id).lower().startswith("qwen/")
+
+
+def parse_torch_dtype(dtype_name: str):
+    dtype_name = str(dtype_name or "").strip().lower()
+    if dtype_name in {"", "none", "default"}:
+        return None
+    mapping = {
+        "float32": torch.float32,
+        "fp32": torch.float32,
+        "float16": torch.float16,
+        "fp16": torch.float16,
+        "bfloat16": torch.bfloat16,
+        "bf16": torch.bfloat16,
+    }
+    if dtype_name not in mapping:
+        raise ValueError(f"Unsupported dtype: {dtype_name}")
+    return mapping[dtype_name]
+
+
+def _normalize_attn_implementation(attn_implementation: str) -> str:
+    attn_implementation = str(attn_implementation or "").strip()
+    if attn_implementation.lower() in {"", "none", "default"}:
+        return ""
+    return attn_implementation
+
+
+def _is_attention_load_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(
+        marker in message
+        for marker in [
+            "attn_implementation",
+            "flash_attention",
+            "flash attention",
+            "flash-attn",
+            "flashattention",
+            "does not support flash",
+        ]
+    )
+
+
+def load_hooked_transformer_with_attention(
+    model_cls,
+    model_id: str,
+    config_kwargs: dict,
+    model_load_kwargs: dict,
+    attn_implementation: str = DEFAULT_ATTN_IMPLEMENTATION,
+    dtype_name: str = DEFAULT_MODEL_DTYPE,
+):
+    model_load_kwargs = dict(model_load_kwargs)
+    dtype = parse_torch_dtype(dtype_name)
+    if dtype is not None:
+        model_load_kwargs["dtype"] = dtype
+
+    def _load(kwargs):
+        try:
+            return model_cls.from_pretrained(
+                model_id,
+                config_kwargs=config_kwargs,
+                **kwargs,
+            )
+        except TypeError:
+            return model_cls.from_pretrained(model_id, **kwargs)
+
+    attn_implementation = _normalize_attn_implementation(attn_implementation)
+    if attn_implementation:
+        flash_kwargs = dict(model_load_kwargs)
+        flash_kwargs["attn_implementation"] = attn_implementation
+        try:
+            model = _load(flash_kwargs)
+            print(f"[attention] using attn_implementation={attn_implementation}, dtype={dtype_name}")
+            return model
+        except Exception as exc:
+            if not _is_attention_load_error(exc):
+                raise
+            print(f"[attention] {attn_implementation} unavailable ({exc}); retrying without flash attention.")
+
+    model = _load(model_load_kwargs)
+    print(f"[attention] using default attention, dtype={dtype_name}")
+    return model
+
+
+def format_prompt_for_model(prompt_text: str, model_id: str, tokenizer=None) -> str:
+    prompt_text = str(prompt_text)
+    if is_qwen_model(model_id) and "/no_think" not in prompt_text and "<|im_start|>" not in prompt_text:
+        if tokenizer is not None and hasattr(tokenizer, "apply_chat_template"):
+            messages = [{"role": "user", "content": QWEN_NO_THINK_PREFIX + prompt_text}]
+            kwargs = {"tokenize": False, "add_generation_prompt": True}
+            try:
+                return tokenizer.apply_chat_template(messages, enable_thinking=False, **kwargs)
+            except TypeError:
+                return tokenizer.apply_chat_template(messages, **kwargs)
+        return QWEN_NO_THINK_PREFIX + prompt_text
+    return prompt_text
+
+
+def strip_qwen_thinking(text: str) -> str:
+    text = str(text)
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"</?think>", "", text, flags=re.IGNORECASE)
+    text = text.replace("<|im_start|>assistant", "")
+    text = text.replace("<|im_start|>user", "")
+    text = text.replace("<|im_end|>", "")
+    text = text.replace("/no_think", "")
+    return text.strip()
+
+
+def trim_after_first_answer(text: str) -> str:
+    text = strip_qwen_thinking(text)
+    for marker in ["\nQuestion:", "\nQuery:"]:
+        if marker in text:
+            text = text.split(marker, 1)[0]
+    answer_match = re.search(r"(.*?Answer:[^\n]*)", text, flags=re.DOTALL | re.IGNORECASE)
+    if answer_match:
+        text = answer_match.group(1)
+    return text.strip()
+
+
+def extract_cot_completion(text: str) -> str:
+    text = strip_qwen_thinking(text)
+    rationale_matches = list(re.finditer(r"\bRationale\s*:", text, flags=re.IGNORECASE))
+    if rationale_matches:
+        text = text[rationale_matches[-1].end():]
+    return trim_after_first_answer(text)
+
+
+def extract_answer_for_metric(text: str) -> str:
+    text = strip_qwen_thinking(text)
+    answer_matches = list(re.finditer(r"\bAnswer\s*:\s*", text, flags=re.IGNORECASE))
+    if answer_matches:
+        text = text[answer_matches[-1].end():]
+    for marker in ["\nQuestion:", "\nQuery:", "\nRationale:"]:
+        if marker in text:
+            text = text.split(marker, 1)[0]
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return lines[0] if lines else text.strip()
+
+
 class Probe(nn.Module):
     def __init__(self, input_size, output_size):
         super().__init__()
@@ -121,6 +266,7 @@ class StopOnPunctuationWithLogit(StoppingCriteria):
         
 def make_loss(model: nn.Module, input_tensor: torch.Tensor, labels: torch.Tensor) \
     -> Union[torch.Tensor, torch.Tensor]:
+    input_tensor = input_tensor.float()
     output = model(input_tensor)
     if output.shape[-1] == 1:
         logit = sigmoid(output).squeeze()
@@ -203,7 +349,7 @@ def method_2_eval(model, activations, labels, pred_lens, args):
     return round(accuracy, 4), len(labels), loss
 
 def _method_3_util(model, activations, labels, pred_lens, args):
-    input_ids = activations[:,-1,:].squeeze()
+    input_ids = activations[:,-1,:].squeeze().float()
     logit=model(input_ids)
     logit = softmax(logit)
     loss = criterion_ce(logit, labels.to(args.device))
@@ -438,26 +584,15 @@ def evaluator(df, metric, pred_list,args):
             
         else:
             for pred in pred_list:
-                try:
-                    pred = pred.split('\n\n')[4]
-                except Exception:
-                    pred = pred
-                if len(pred.split('\n')) > 7:
-                    new_pred = '\n'.join(pred.split('\n')[8:])
-                    pred_to_train.append(new_pred)
-                else:
-                    if len(pred.split('\n')) > 1:
-                        new_pred = '\n'.join(pred.split('\n')[1:])
-                    else:
-                        new_pred = pred
-                    pred_to_train.append(new_pred)
-                
-                pred_lists.append(new_pred.replace('</s>','').replace('<eos>','').replace('Answer:','').strip())
+                new_pred = extract_cot_completion(pred)
+                pred_to_train.append(new_pred)
+                pred_lists.append(extract_answer_for_metric(new_pred).replace('</s>','').replace('<eos>','').strip())
         
     else:
         for pred in pred_list:
-            
+            pred = strip_qwen_thinking(pred)
             new_pred=pred.split('\n\n')[2]
+            new_pred = trim_after_first_answer(new_pred)
             pred_lists.append(new_pred.replace('</s>','').replace('<eos>','').replace('Answer:','').strip())
     
     for num, ans in enumerate(tqdm(df['answer'][:args.steps_limit+1])):
@@ -505,8 +640,34 @@ class BasicGenerator:
         self.tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
         self.model_config = AutoConfig.from_pretrained(model_name_or_path,
                     trust_remote_code = "falcon" in model_name_or_path)
-        self.model = AutoModelForCausalLM.from_pretrained(model_name_or_path, device_map="cuda:0", 
-                    trust_remote_code = "falcon" in model_name_or_path)
+        model_kwargs = {
+            "device_map": "cuda:0",
+            "trust_remote_code": "falcon" in model_name_or_path,
+        }
+        dtype = parse_torch_dtype(DEFAULT_MODEL_DTYPE)
+        if dtype is not None:
+            model_kwargs["dtype"] = dtype
+        attn_implementation = _normalize_attn_implementation(DEFAULT_ATTN_IMPLEMENTATION)
+        if attn_implementation:
+            model_kwargs["attn_implementation"] = attn_implementation
+        try:
+            self.model = AutoModelForCausalLM.from_pretrained(model_name_or_path, **model_kwargs)
+        except TypeError as exc:
+            if attn_implementation and _is_attention_load_error(exc):
+                model_kwargs.pop("attn_implementation", None)
+                print(f"[attention] {attn_implementation} unavailable ({exc}); retrying without flash attention.")
+                self.model = AutoModelForCausalLM.from_pretrained(model_name_or_path, **model_kwargs)
+            elif "dtype" in str(exc) and "dtype" in model_kwargs:
+                model_kwargs["torch_dtype"] = model_kwargs.pop("dtype")
+                self.model = AutoModelForCausalLM.from_pretrained(model_name_or_path, **model_kwargs)
+            else:
+                raise
+        except Exception as exc:
+            if not attn_implementation or not _is_attention_load_error(exc):
+                raise
+            model_kwargs.pop("attn_implementation", None)
+            print(f"[attention] {attn_implementation} unavailable ({exc}); retrying without flash attention.")
+            self.model = AutoModelForCausalLM.from_pretrained(model_name_or_path, **model_kwargs)
         if self.model_config.model_type == "llama":
             self.space_token = "▁"
         else:

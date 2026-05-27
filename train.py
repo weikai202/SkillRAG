@@ -1,6 +1,7 @@
 
 from typing import Union
 from transformer_lens import HookedTransformer
+import csv
 import torch
 import pandas as pd
 from torch import nn
@@ -14,6 +15,8 @@ from tqdm import tqdm#
 import numpy as np
 import random
 import wandb
+
+from utils import format_prompt_for_model, is_qwen_model, load_hooked_transformer_with_attention, trim_after_first_answer
 
 def set_seed(seed):
     torch.manual_seed(seed)
@@ -56,14 +59,14 @@ def main(args):
     if model_id == 'Qwen/Qwen3-8B':
         config_kwargs['rope_theta'] = 1000000
 
-    try:
-        model = HookedTransformer.from_pretrained(
-            model_id,
-            config_kwargs=config_kwargs,
-            **model_load_kwargs,
-        )
-    except TypeError:
-        model = HookedTransformer.from_pretrained(model_id, **model_load_kwargs)
+    model = load_hooked_transformer_with_attention(
+        HookedTransformer,
+        model_id,
+        config_kwargs,
+        model_load_kwargs,
+        args.attn_implementation,
+        args.dtype,
+    )
     
     model_short = args.model_id.split('/')[1]
     dataset_name = args.dataset_name
@@ -75,15 +78,25 @@ def main(args):
         save_dir = '7b'
     else:
         save_dir = '2b'
-    train_data_path = f'dataset/{save_dir}/retrieval_qa_{model_short}_{dataset_name}_all_train_in3_balanced.csv'
-    if not os.path.exists(train_data_path):
-        train_data_path = f'dataset/{save_dir}/retrieval_qa_{model_short}_{dataset_name}_all_train_in3_.csv'
+    train_data_path = args.train_data_path
+    if not train_data_path:
+        train_data_path = f'dataset/{save_dir}/retrieval_qa_{model_short}_{dataset_name}_all_train_in3_balanced.csv'
+        if not os.path.exists(train_data_path):
+            train_data_path = f'dataset/{save_dir}/retrieval_qa_{model_short}_{dataset_name}_all_train_in3_.csv'
     train_df=pd.read_csv(train_data_path).dropna(axis=0).reset_index(drop=True)
+    train_df['question_with_prompt'] = train_df['question_with_prompt'].apply(
+        lambda x: format_prompt_for_model(x, model_id, model.tokenizer)
+    )
+    train_df['pred'] = train_df['pred'].apply(trim_after_first_answer)
     train_df = train_df[:int(len(train_df) * train_ratio)]
-    dev_data_path = f'dataset/{save_dir}/retrieval_qa_{model_short}_{dataset_name}_all_zeroshot_test_500.csv'
+    dev_data_path = args.dev_data_path or f'dataset/{save_dir}/retrieval_qa_{model_short}_{dataset_name}_all_zeroshot_test_500.csv'
     
     
     dev_df=pd.read_csv(dev_data_path)
+    dev_df['question_with_prompt'] = dev_df['question_with_prompt'].apply(
+        lambda x: format_prompt_for_model(x, model_id, model.tokenizer)
+    )
+    dev_df['pred'] = dev_df['pred'].apply(trim_after_first_answer)
     
     # train_df = train_df[:1000]
     class Probe(nn.Module):
@@ -136,14 +149,21 @@ def main(args):
             return len(self.df)
         def __getitem__(self, index):
             
-            tokens1=self.model.to_tokens(self.df['question_with_prompt'][index]).squeeze().to('cpu')
-            tokens2 = self.model.to_tokens(f"{self.df['question_with_prompt'][index]+ ' '+self.df['pred'][index]}").squeeze().to('cpu')
+            prompt_text = self.df['question_with_prompt'][index]
+            pred_text = self.df['pred'][index]
+            tokens1=self.model.to_tokens(prompt_text).squeeze().to('cpu')
+            tokens2 = self.model.to_tokens(f"{prompt_text} {pred_text}").squeeze().to('cpu')
+            prompt_len = tokens1.shape[-1]
+            if tokens2.shape[0] > self.max_length:
+                overflow = tokens2.shape[0] - self.max_length
+                tokens2 = tokens2[overflow:]
+                prompt_len = max(prompt_len - overflow, 0)
         
             tp = torch.tensor([self.pad_id]) 
             tensor_padding = tp.repeat((self.max_length - tokens2.shape[0]))
             return_tokens = torch.cat((tensor_padding, tokens2))
             
-            pred_len = tokens2.shape[-1] - tokens1.shape[-1]        
+            pred_len = tokens2.shape[-1] - prompt_len
             acc = self.df['acc'][index]      
         
             return {
@@ -161,8 +181,58 @@ def main(args):
     epochs = args.epochs
     method = args.method
     
-    train_dataset = CustomDataset(train_df, model)
-    dev_dataset = CustomDataset(dev_df, model)
+    dataset_max_length = args.max_length if args.max_length > 0 else (2048 if is_qwen_model(model_id) else 1536)
+    train_dataset = CustomDataset(train_df, model, max_length=dataset_max_length)
+    dev_dataset = CustomDataset(dev_df, model, max_length=dataset_max_length)
+
+    if args.debug_dump_path:
+        os.makedirs(os.path.dirname(args.debug_dump_path) or ".", exist_ok=True)
+        with open(args.debug_dump_path, "w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=[
+                    "split",
+                    "index",
+                    "prompt_has_no_think",
+                    "pred_has_think",
+                    "decoded_pred_span_has_think",
+                    "input_token_len",
+                    "pred_len",
+                    "prompt",
+                    "pred",
+                    "decoded_pred_span",
+                ],
+            )
+            writer.writeheader()
+            for split, source_df, source_dataset in [
+                ("train", train_df, train_dataset),
+                ("dev", dev_df, dev_dataset),
+            ]:
+                for i in range(min(args.debug_dump_limit, len(source_df))):
+                    sample = source_dataset[i]
+                    pred_len = int(sample["pred_len"])
+                    decoded_pred_span = (
+                        model.tokenizer.decode(sample["input_tokens"][-pred_len:].tolist())
+                        if pred_len > 0
+                        else ""
+                    )
+                    prompt = str(source_df["question_with_prompt"].iloc[i])
+                    pred = str(source_df["pred"].iloc[i])
+                    writer.writerow(
+                        {
+                            "split": split,
+                            "index": i,
+                            "prompt_has_no_think": "/no_think" in prompt or "<|im_start|>user" in prompt,
+                            "pred_has_think": "<think" in pred.lower(),
+                            "decoded_pred_span_has_think": "<think" in decoded_pred_span.lower(),
+                            "input_token_len": int(sample["input_tokens"].shape[0]),
+                            "pred_len": pred_len,
+                            "prompt": prompt,
+                            "pred": pred,
+                            "decoded_pred_span": decoded_pred_span,
+                        }
+                    )
+
     train_dataloader=DataLoader(train_dataset, batch_size=batch_size, shuffle = True)
     dev_dataloader=DataLoader(dev_dataset, batch_size=batch_size, shuffle = True)
     
@@ -181,9 +251,15 @@ def main(args):
     scheduler_resid_post = ExponentialLR(optimizer_resid_post, gamma=0.995)
 
     model.eval()
+
+    activation_hook_names = {
+        f"blocks.{layer}.hook_resid_mid",
+        f"blocks.{layer}.hook_resid_post",
+    }
     
     def make_loss(model: nn.Module, input_tensor: torch.Tensor, labels: torch.Tensor) \
         -> Union[torch.Tensor, torch.Tensor]:
+        input_tensor = input_tensor.float()
         output = model(input_tensor)
         if output.shape[-1] == 1:
             logit = sigmoid(output).squeeze()
@@ -269,7 +345,7 @@ def main(args):
         return round(accuracy, 4), len(labels), loss
 
     def _method_3_util(model, activations, labels, pred_lens):
-        input_ids = activations[:,-1,:].squeeze()
+        input_ids = activations[:,-1,:].squeeze().float()
         logit=model(input_ids)
         logit = softmax(logit)
         loss = criterion_ce(logit, labels.to(device))
@@ -302,11 +378,9 @@ def main(args):
         loss1s,loss2s,loss3s,loss4s = [],[],[],[]
         for num, batch in enumerate(tqdm(train_dataloader, desc=f"Train e{epoch+1}/{epochs}", dynamic_ncols=True, leave=False)):
             with torch.no_grad():
-                _, cache = model.run_with_cache(batch['input_tokens'], names_filter = lambda name: name.startswith(f"blocks.{layer}")) # , do_sample=False
+                _, cache = model.run_with_cache(batch['input_tokens'], names_filter = lambda name: name in activation_hook_names) # , do_sample=False
             
-                activations_attn_out = cache['attn_out', layer]
                 activations_resid_mid = cache['resid_mid', layer]
-                activations_mlp_out = cache["mlp_out", layer] 
                 activations_resid_post = cache['resid_post', layer]
             
             pred_lens = batch['pred_len']
@@ -345,7 +419,7 @@ def main(args):
         for num, batch in enumerate(tqdm(dev_dataloader, desc=f"Eval e{epoch+1}/{epochs}", dynamic_ncols=True, leave=False)):
             with torch.no_grad():
 
-                _, cache = model.run_with_cache(batch['input_tokens'], names_filter = lambda name: name.startswith(f"blocks.{layer}"))
+                _, cache = model.run_with_cache(batch['input_tokens'], names_filter = lambda name: name in activation_hook_names)
 
                 activations_resid_mid = cache['resid_mid', layer]
                 activations_resid_post = cache['resid_post', layer]
@@ -419,6 +493,13 @@ if __name__ == '__main__':
     parser.add_argument('--device', type=str, default='cuda:0')
     parser.add_argument('--model_id', default = 'meta-llama/Meta-Llama-3-8B-Instruct')
     parser.add_argument('--dataset_name', type=str, default='nq')
+    parser.add_argument('--train_data_path', type=str, default='')
+    parser.add_argument('--dev_data_path', type=str, default='')
+    parser.add_argument('--max_length', type=int, default=0)
+    parser.add_argument('--debug_dump_path', type=str, default='')
+    parser.add_argument('--debug_dump_limit', type=int, default=10)
+    parser.add_argument('--attn_implementation', type=str, default='flash_attention_2')
+    parser.add_argument('--dtype', type=str, default='bfloat16')
     parser.add_argument('--disable_wandb', action='store_true')
     args = parser.parse_args()
     main(args)

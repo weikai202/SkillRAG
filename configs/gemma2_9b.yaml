@@ -1,6 +1,10 @@
 model:
   id: google/gemma-2-9b-it
 
+attention:
+  attn_implementation: flash_attention_2
+  dtype: bfloat16
+
 index_datasets: [nq, musique, hotpotqa, trivia, 2wikimultihopqa]
 
 retrieval:

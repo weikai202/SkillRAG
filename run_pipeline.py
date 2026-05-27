@@ -161,6 +161,49 @@ def collect_skillrag_trace(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
     return out
 
 
+def collect_question_retrieval_skill_stats(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    path = "result/question_retrieval_skill_stats.csv"
+    if not os.path.exists(path):
+        return []
+    model_id = cfg["model"]["id"]
+    datasets = set(cfg["evaluate"]["datasets"])
+    methods = set(cfg["evaluate"]["methods"])
+    steps = cfg["evaluate"]["steps_limit"]
+    tr_or_dev = cfg["evaluate"].get("tr_or_dev", "dev")
+    df = pd.read_csv(path)
+    df = df[(df["model_id"] == model_id) & (df["dataset_name"].isin(datasets))]
+    if "steps_limit" in df:
+        df = df[df["steps_limit"] == steps]
+    if "tr_or_dev" in df:
+        df = df[df["tr_or_dev"] == tr_or_dev]
+    if methods:
+        df = df[df["retr_method"].isin(methods)]
+    if len(df) == 0:
+        return []
+
+    skill_cols = [
+        "query_misaligned_count",
+        "multi_hop_missing_count",
+        "evidence_not_used_count",
+        "insufficient_evidence_count",
+    ]
+    rows: List[Dict[str, Any]] = []
+    grouped = df.groupby(["dataset_name", "retr_method"], dropna=False)
+    for (dataset_name, retr_method), group in grouped:
+        row = {
+            "dataset_name": dataset_name,
+            "retr_method": retr_method,
+            "num_questions": int(len(group)),
+            "avg_retrieval_rounds": float(group["retrieval_rounds"].mean()),
+            "max_retrieval_rounds": int(group["retrieval_rounds"].max()),
+            "total_skill_calls": int(group["total_skill_calls"].sum()) if "total_skill_calls" in group else 0,
+        }
+        for col in skill_cols:
+            row[col] = int(group[col].sum()) if col in group else 0
+        rows.append(row)
+    return rows
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
@@ -199,6 +242,17 @@ def main() -> None:
     device = cfg["train"]["device"]
     train_ratio = cfg["train"]["train_ds_ratio"]
     disable_wandb = cfg["train"].get("disable_wandb", True)
+    max_new_tokens = int(cfg.get("generation", {}).get("max_new_tokens", 0) or 0)
+    train_max_length = int(cfg["train"].get("max_length", 0) or 0)
+    attention_cfg = cfg.get("attention", {})
+    attn_implementation = attention_cfg.get("attn_implementation", "flash_attention_2")
+    model_dtype = attention_cfg.get("dtype", "bfloat16")
+    attention_args = [
+        "--attn_implementation",
+        str(attn_implementation),
+        "--dtype",
+        str(model_dtype),
+    ]
 
     run_logs: List[Dict[str, Any]] = []
 
@@ -236,6 +290,9 @@ def main() -> None:
                         str(sep_number),
                         "--model_id",
                         model_id,
+                        "--max_new_tokens" if max_new_tokens else "",
+                        str(max_new_tokens) if max_new_tokens else "",
+                        *attention_args,
                     ],
                     args.dry_run,
                     resume_map=resume_map,
@@ -263,6 +320,9 @@ def main() -> None:
                         str(sep_number),
                         "--model_id",
                         model_id,
+                        "--max_new_tokens" if max_new_tokens else "",
+                        str(max_new_tokens) if max_new_tokens else "",
+                        *attention_args,
                     ],
                     args.dry_run,
                     resume_map=resume_map,
@@ -308,6 +368,9 @@ def main() -> None:
                         dataset_name,
                         "--train_ds_ratio",
                         str(train_ratio),
+                        "--max_length" if train_max_length else "",
+                        str(train_max_length) if train_max_length else "",
+                        *attention_args,
                         "--disable_wandb" if disable_wandb else "",
                     ],
                     args.dry_run,
@@ -365,6 +428,9 @@ def main() -> None:
                 "--extract_sep" if eval_extract_sep else "",
                 "--sep_number",
                 str(eval_sep_number),
+                "--max_new_tokens" if max_new_tokens else "",
+                str(max_new_tokens) if max_new_tokens else "",
+                *attention_args,
             ]
             if dataset_name in datasets_build:
                 eval_cmd.extend(["--prober_train_dataset", dataset_name])
@@ -385,6 +451,7 @@ def main() -> None:
     build_metrics = collect_metrics(model_id, datasets_build, ["train", "dev"], ["simple", "none"])
     eval_metrics = collect_method_metrics_from_result(cfg)
     skillrag_trace = collect_skillrag_trace(cfg)
+    question_retrieval_skill_stats = collect_question_retrieval_skill_stats(cfg)
 
     report = {
         "timestamp": datetime.now().isoformat(),
@@ -394,6 +461,7 @@ def main() -> None:
         "build_simple_none_metrics": build_metrics,  # list as requested
         "evaluation_metrics": eval_metrics,  # acc/em by method
         "skillrag_traces": skillrag_trace,  # query/reasoning/answer + step prober_scores
+        "question_retrieval_skill_stats": question_retrieval_skill_stats,
         "commands": run_logs,
     }
 

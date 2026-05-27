@@ -30,10 +30,11 @@ from torch.utils.data import DataLoader, Dataset
 from metrics.metrics import EmF1Metric, SupportEmF1Metric
 
 from utils import AttnWeightRAG, FixLengthRAG, StopOnPunctuationWithLogit, Config_Maker, preprocessing, batch_topk_sim
+from utils import format_prompt_for_model, is_qwen_model, load_hooked_transformer_with_attention, strip_qwen_thinking
 from utils import load_prober_cfg_for_model, load_prober_models, return_prober_logit_gemma_2b, evaluator, normalize_answer
 from prompts import inst_prompt, cot_prompt, retr_qa, retr_qa_cot2
 from prompts import skillrag_diagnosis_prompt, skillrag_router_prompt
-from prompts import skillrag_query_rewrite_prompt, skillrag_decomposition_prompt, skillrag_evidence_grounded_prompt, skillrag_insufficient_evidence_prompt
+from prompts import skillrag_query_rewrite_prompt, skillrag_decomposition_prompt, skillrag_evidence_grounded_prompt
 
 from typing import Dict, List, NamedTuple, Optional, Tuple, Union, cast, overload
 from typing_extensions import Literal
@@ -226,6 +227,7 @@ def main(args):
     dataset_name = args.dataset_name
     is_cot = args.is_cot
     model_id = args.model_id
+    is_qwen = is_qwen_model(model_id)
     tr_or_dev = args.tr_or_dev
     _ds = args.ds # 25, 50, 75, 1000, else
     prober_dataset_primary = dataset_name
@@ -239,7 +241,12 @@ def main(args):
         prompt_function_data=cot_prompt
         prompt_function_retr = retr_qa_cot2
         savename_is_cot = 'cot'
-        max_new_tokens = 150
+        max_new_tokens = args.max_new_tokens if args.max_new_tokens > 0 else (512 if is_qwen else 150)
+    else:
+        prompt_function_data=inst_prompt
+        prompt_function_retr = retr_qa
+        savename_is_cot = 'nocot'
+        max_new_tokens = args.max_new_tokens if args.max_new_tokens > 0 else (256 if is_qwen else 64)
         
     if is_sparse:
         from llama_index.retrievers.bm25 import BM25Retriever
@@ -325,17 +332,21 @@ def main(args):
     if model_id == 'Qwen/Qwen3-8B':
         # Qwen3Config in some transformer_lens versions misses rope_theta expectation.
         config_kwargs['rope_theta'] = 1000000
-    try:
-        model = CustomHookedTransformer.from_pretrained(
-            model_id,
-            config_kwargs=config_kwargs,
-            **model_load_kwargs,
-        )
-    except TypeError:
-        # Fallback for transformer_lens versions without config_kwargs support.
-        model = CustomHookedTransformer.from_pretrained(model_id, **model_load_kwargs)
+    model = load_hooked_transformer_with_attention(
+        CustomHookedTransformer,
+        model_id,
+        config_kwargs,
+        model_load_kwargs,
+        args.attn_implementation,
+        args.dtype,
+    )
     tokenizer = model.tokenizer
     tokenizer.pad_token = tokenizer.eos_token
+
+    def prepare_prompt(prompt_text):
+        return format_prompt_for_model(prompt_text, model_id, tokenizer)
+
+    generation_stop_tokens = None if is_qwen else ["Question:"]
     
     if retr_method == 'probing':
 
@@ -413,7 +424,7 @@ def main(args):
                     
         def __getitem__(self, index):
             item = self.dataset[index]
-            prompt_text = self.prompt(item)
+            prompt_text = prepare_prompt(self.prompt(item))
             token = self.tokenizer(prompt_text,return_tensors='pt').to(device)
             return {
                 'input_ids': token['input_ids'].squeeze(),
@@ -422,6 +433,13 @@ def main(args):
                 'text': item,
             }
     df = preprocessing(df, args)
+    if args.hard_cases_path:
+        hard_cases_df = pd.read_csv(args.hard_cases_path)
+        hard_queries = set(hard_cases_df['query'].astype(str))
+        df = df[df['query'].astype(str).isin(hard_queries)].reset_index(drop=True)
+        print(f"[hard_cases] loaded {len(df)} cases from {args.hard_cases_path}")
+        if len(df) == 0:
+            raise SystemExit(f"No hard cases matched current dataset from {args.hard_cases_path}")
     if (retr_method == 'flare') or (retr_method == 'linguistic'):
         pass
     else:
@@ -443,7 +461,7 @@ def main(args):
         layer_name = f'blocks.{prober_cfg.layer}.hook_{prober_cfg.position}'
         with torch.no_grad():
             # import pdb;pdb.set_trace()
-            input=torch.concat(cache[layer_name][1:], dim = 1).to(device)
+            input=torch.concat(cache[layer_name][1:], dim = 1).to(device).float()
             input = torch.sum(input, dim = 1)
             logit=prober(input)
         # import pdb;pdb.set_trace()
@@ -482,6 +500,7 @@ def main(args):
 
     def diagnose_failure(question, reasoning_answer):
         def _tokenize_with_ctx_limit(prompt_text, reserve_new_tokens):
+            prompt_text = prepare_prompt(prompt_text)
             max_ctx = getattr(model.cfg, "n_ctx", 2048)
             max_in = max(32, int(max_ctx) - int(reserve_new_tokens))
             return tokenizer(
@@ -496,11 +515,11 @@ def main(args):
         with torch.no_grad():
             diagnosis_out = model.generate(diagnosis_input_ids, do_sample=False, max_new_tokens=48)
         diagnosis_text = tokenizer.decode(diagnosis_out[0][diagnosis_input_ids.shape[1]:], skip_special_tokens=True)
-        return diagnosis_text.replace('</s>','').replace('<eos>','').strip()
+        return strip_qwen_thinking(diagnosis_text).replace('</s>','').replace('<eos>','').strip()
 
     def choose_skill(question, reasoning_answer):
         diagnosis = diagnose_failure(question, reasoning_answer)
-        router_prompt = skillrag_router_prompt(question, reasoning_answer, diagnosis)
+        router_prompt = prepare_prompt(skillrag_router_prompt(question, reasoning_answer, diagnosis))
         max_ctx = getattr(model.cfg, "n_ctx", 2048)
         max_in = max(32, int(max_ctx) - 20)
         router_input_ids = tokenizer(
@@ -511,7 +530,7 @@ def main(args):
         )['input_ids'].to(device)
         with torch.no_grad():
             route_out = model.generate(router_input_ids, do_sample=False, max_new_tokens=20)
-        route_text = tokenizer.decode(route_out[0][router_input_ids.shape[1]:], skip_special_tokens=True).lower()
+        route_text = strip_qwen_thinking(tokenizer.decode(route_out[0][router_input_ids.shape[1]:], skip_special_tokens=True)).lower()
         if 'insufficient_evidence' in route_text:
             return 'insufficient_evidence', diagnosis
         if 'multi_hop_missing' in route_text:
@@ -547,10 +566,9 @@ def main(args):
             generation_prompt = skillrag_query_rewrite_prompt(question, reasoning_answer, evidences)
         elif skill_name == 'multi_hop_missing':
             generation_prompt = skillrag_decomposition_prompt(question, reasoning_answer, evidences)
-        elif skill_name == 'insufficient_evidence':
-            generation_prompt = skillrag_insufficient_evidence_prompt(question, reasoning_answer, evidences)
         else:
             generation_prompt = skillrag_evidence_grounded_prompt(question, reasoning_answer, evidences)
+        generation_prompt = prepare_prompt(generation_prompt)
         max_ctx = getattr(model.cfg, "n_ctx", 2048)
         max_in = max(32, int(max_ctx) - 96)
         generation_input_ids = tokenizer(
@@ -562,14 +580,21 @@ def main(args):
         with torch.no_grad():
             generated = model.generate(generation_input_ids, do_sample=False, max_new_tokens=96)
         generated_text = tokenizer.decode(generated[0][generation_input_ids.shape[1]:], skip_special_tokens=True)
+        generated_text = strip_qwen_thinking(generated_text)
         return parse_search_query(skill_name, generated_text, question), generated_text
 
     retr_count_list, pred_list = [], []
     skillrag_initial_outputs = []
     skillrag_round_logs = []
+    SKILL_NAMES = ['query_misaligned', 'multi_hop_missing', 'evidence_not_used', 'insufficient_evidence']
+    EXIT_SKILL = 'insufficient_evidence'
+    skill_router_counts = {skill_name: 0 for skill_name in SKILL_NAMES}
+    skillrag_exit_saved_rounds = 0
+    skillrag_exit_est_saved_new_tokens = 0
     steps = 0
     log_interval = 20
     softmax_f = torch.nn.Softmax(dim = 1)
+    max_retrieval_rounds = args.max_retrieval_rounds
     if retr_method == 'probing':
         start = time.time()
         for value in tqdm(dataloader, desc="Run probing", dynamic_ncols=True):
@@ -577,7 +602,7 @@ def main(args):
             
             retr_count = 0
             with torch.no_grad():
-                output = model.generate(value['input_ids'], do_sample=False, max_new_tokens=max_new_tokens, stop_tokenss=["Question:"])
+                output = model.generate(value['input_ids'], do_sample=False, max_new_tokens=max_new_tokens, stop_tokenss=generation_stop_tokens)
                 if steps % log_interval == 0:
                     print(model.to_string(output)[0])
                 
@@ -599,7 +624,8 @@ def main(args):
                 if steps % log_interval == 0:
                     print(for_set_threshold[0].item() + threshold,for_set_threshold[1].item())
             else:
-                while prediction_do_more_retriever == 1:
+                search_input_new = model.to_string(output)
+                while prediction_do_more_retriever == 1 and retr_count < max_retrieval_rounds:
                     cache={}
                     if is_sparse:
                         if retr_count == 0:
@@ -620,7 +646,7 @@ def main(args):
                     
                     with torch.no_grad():
                         
-                        output = model.generate(tokenizer(new_input, return_tensors='pt')['input_ids'].to(device), do_sample=False, max_new_tokens=max_new_tokens, stop_tokenss=["Question:"])
+                        output = model.generate(tokenizer(prepare_prompt(new_input), return_tensors='pt')['input_ids'].to(device), do_sample=False, max_new_tokens=max_new_tokens, stop_tokenss=generation_stop_tokens)
                         output.to('cpu')
                         
                         if model_id in SUPPORTED_PROBER_MODELS:
@@ -635,15 +661,11 @@ def main(args):
                         else: prediction_do_more_retriever=1
                         
                         search_input_new=model.to_string(output)
+                        retr_count += 1
                         if (steps + 1) % log_interval == 0:
                             print(search_input_new[0])
                         if (steps + 1) % log_interval == 0:
                             print(for_set_threshold[0].item() + threshold,for_set_threshold[1].item())
-                        
-                        if retr_count > 2:
-                            break
-                        else:
-                            retr_count += 1
                 pred_list.append(search_input_new[0])
                 
             retr_count_list.append(retr_count)
@@ -660,8 +682,9 @@ def main(args):
         for value in tqdm(dataloader, desc="Run none", dynamic_ncols=True):
             
             with torch.no_grad():
-                output = model.generate(value['input_ids'], do_sample=False, max_new_tokens=max_new_tokens, stop_tokenss=["Question:"])
+                output = model.generate(value['input_ids'], do_sample=False, max_new_tokens=max_new_tokens, stop_tokenss=generation_stop_tokens)
             pred_list.append(model.to_string(output)[0])
+            retr_count_list.append(0)
             steps +=1
             if steps > steps_limit:   
                 end = time.time()
@@ -681,11 +704,12 @@ def main(args):
                     
             new_input = prompt_function_retr(value['text'][0], evidences)
 
-            output = model.generate(tokenizer(new_input, return_tensors='pt')['input_ids'].to(device), do_sample=False, max_new_tokens=max_new_tokens, stop_tokenss=["Question:"])
+            output = model.generate(tokenizer(prepare_prompt(new_input), return_tensors='pt')['input_ids'].to(device), do_sample=False, max_new_tokens=max_new_tokens, stop_tokenss=generation_stop_tokens)
             output.to('cpu')
 
             search_input_new=model.to_string(output)[0]
             pred_list.append(search_input_new)
+            retr_count_list.append(1)
             steps += 1
             if steps > steps_limit:
                 end = time.time()
@@ -693,14 +717,13 @@ def main(args):
     
     if retr_method == 'skillrag':
         start = time.time()
-        max_retrieval_rounds = args.max_retrieval_rounds
         for value in tqdm(dataloader, desc="Run skillrag", dynamic_ncols=True):
             retr_count = 0
             final_output_text = ''
             sample_round_logs = []
             cache = {}
             with torch.no_grad():
-                initial_output = model.generate(value['input_ids'], do_sample=False, max_new_tokens=max_new_tokens, stop_tokenss=["Question:"])
+                initial_output = model.generate(value['input_ids'], do_sample=False, max_new_tokens=max_new_tokens, stop_tokenss=generation_stop_tokens)
                 initial_output.to('cpu')
             initial_output_text = model.to_string(initial_output)[0]
             prediction_do_more_retriever, initial_scores = prober_need_retrieval()
@@ -739,7 +762,7 @@ def main(args):
 
                 new_input = prompt_function_retr(value['text'][0], evidences)
                 with torch.no_grad():
-                    output = model.generate(tokenizer(new_input, return_tensors='pt')['input_ids'].to(device), do_sample=False, max_new_tokens=max_new_tokens, stop_tokenss=["Question:"])
+                    output = model.generate(tokenizer(prepare_prompt(new_input), return_tensors='pt')['input_ids'].to(device), do_sample=False, max_new_tokens=max_new_tokens, stop_tokenss=generation_stop_tokens)
                     output.to('cpu')
                 output_text = model.to_string(output)[0]
                 last_output_text = output_text
@@ -763,8 +786,21 @@ def main(args):
                     break
 
                 selected_skill, diagnosis = choose_skill(value['text'][0], output_text)
+                skill_router_counts[selected_skill] = skill_router_counts.get(selected_skill, 0) + 1
+                print(f"[skill_router] model={model_id} dataset={dataset_name} selected={selected_skill} counts={skill_router_counts}")
                 round_log['diagnosis'] = diagnosis
                 round_log['selected_skill'] = selected_skill
+
+                if selected_skill == EXIT_SKILL:
+                    exit_saved_rounds = max(0, max_retrieval_rounds - retr_count)
+                    skillrag_exit_saved_rounds += exit_saved_rounds
+                    skillrag_exit_est_saved_new_tokens += exit_saved_rounds * max_new_tokens
+                    round_log['stopped_by_exit_skill'] = True
+                    round_log['exit_action'] = 'stop_retrieval_use_current_answer'
+                    round_log['exit_saved_rounds'] = exit_saved_rounds
+                    round_log['exit_est_saved_new_tokens'] = exit_saved_rounds * max_new_tokens
+                    sample_round_logs.append(round_log)
+                    break
 
                 next_query, next_generation_raw = skill_generate_search_query(selected_skill, value['text'][0], output_text, evidences)
                 round_log['skill_generation_raw'] = next_generation_raw
@@ -841,6 +877,203 @@ def main(args):
 
     append_run_metric_yaml()
 
+    def append_skill_router_counts_csv():
+        if retr_method != 'skillrag':
+            return
+        save_path = "result"
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)
+        total = sum(skill_router_counts.get(skill_name, 0) for skill_name in SKILL_NAMES)
+        row = {
+            "timestamp": datetime.now().isoformat(),
+            "model_id": model_id,
+            "dataset_name": dataset_name,
+            "retr_method": retr_method,
+            "tr_or_dev": tr_or_dev,
+            "steps_limit": steps_limit,
+            "total_skill_router_calls": total,
+            "exit_skill": EXIT_SKILL,
+            "exit_saved_rounds": skillrag_exit_saved_rounds,
+            "exit_est_saved_new_tokens": skillrag_exit_est_saved_new_tokens,
+        }
+        for skill_name in SKILL_NAMES:
+            row[f"{skill_name}_count"] = skill_router_counts.get(skill_name, 0)
+        for skill_name in SKILL_NAMES:
+            row[f"{skill_name}_ratio"] = (skill_router_counts.get(skill_name, 0) / total) if total else 0
+        count_path = os.path.join(save_path, "skill_router_counts.csv")
+        pd.DataFrame([row]).to_csv(count_path, mode="a", header=not os.path.exists(count_path), index=False)
+        print(f"[skill_router] saved counts to {count_path}: {row}")
+
+    append_skill_router_counts_csv()
+
+    def append_question_retrieval_skill_stats_csv():
+        save_path = "result"
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)
+        stats_path = args.save_question_stats_path or os.path.join(save_path, "question_retrieval_skill_stats.csv")
+        used_len = min(len(df), len(pred_list), len(retr_count_list), len(acc))
+        columns = [
+            "timestamp", "model_id", "dataset_name", "retr_method", "tr_or_dev", "steps_limit",
+            "source_hard_cases_path", "query_index", "query", "answer", "retrieval_rounds",
+            "acc", "pred", "pred_to_train", "total_skill_calls", "selected_skill_sequence",
+            "exit_skill", "stopped_by_exit_skill", "exit_saved_rounds", "exit_est_saved_new_tokens",
+        ] + [f"{skill_name}_count" for skill_name in SKILL_NAMES]
+        rows = []
+
+        def summarize_round_logs(round_log_text):
+            counts = {skill_name: 0 for skill_name in SKILL_NAMES}
+            selected = []
+            stopped_by_exit = False
+            exit_saved_rounds = 0
+            exit_est_saved_new_tokens = 0
+            if not round_log_text:
+                return counts, selected, stopped_by_exit, exit_saved_rounds, exit_est_saved_new_tokens
+            try:
+                logs = json.loads(round_log_text)
+            except Exception:
+                return counts, selected, stopped_by_exit, exit_saved_rounds, exit_est_saved_new_tokens
+            for item in logs:
+                skill_name = item.get("selected_skill")
+                if skill_name in counts:
+                    counts[skill_name] += 1
+                    selected.append(skill_name)
+                if item.get("stopped_by_exit_skill"):
+                    stopped_by_exit = True
+                    exit_saved_rounds += int(item.get("exit_saved_rounds", 0))
+                    exit_est_saved_new_tokens += int(item.get("exit_est_saved_new_tokens", 0))
+            return counts, selected, stopped_by_exit, exit_saved_rounds, exit_est_saved_new_tokens
+
+        for i in range(used_len):
+            round_log_text = skillrag_round_logs[i] if retr_method == 'skillrag' and i < len(skillrag_round_logs) else ""
+            per_q_counts, selected_skills, stopped_by_exit, exit_saved_rounds, exit_est_saved_new_tokens = summarize_round_logs(round_log_text)
+            row = {
+                "timestamp": datetime.now().isoformat(),
+                "model_id": model_id,
+                "dataset_name": dataset_name,
+                "retr_method": retr_method,
+                "tr_or_dev": tr_or_dev,
+                "steps_limit": steps_limit,
+                "source_hard_cases_path": args.hard_cases_path,
+                "query_index": i,
+                "query": df['query'].iloc[i],
+                "answer": df['answer'].iloc[i],
+                "retrieval_rounds": retr_count_list[i],
+                "acc": acc[i],
+                "pred": pred_list[i],
+                "pred_to_train": pred_to_train[i] if i < len(pred_to_train) else "",
+                "total_skill_calls": sum(per_q_counts.values()),
+                "selected_skill_sequence": json.dumps(selected_skills, ensure_ascii=False),
+                "exit_skill": EXIT_SKILL,
+                "stopped_by_exit_skill": stopped_by_exit,
+                "exit_saved_rounds": exit_saved_rounds,
+                "exit_est_saved_new_tokens": exit_est_saved_new_tokens,
+            }
+            for skill_name in SKILL_NAMES:
+                row[f"{skill_name}_count"] = per_q_counts[skill_name]
+            rows.append(row)
+
+        pd.DataFrame(rows, columns=columns).to_csv(stats_path, mode="a", header=not os.path.exists(stats_path), index=False)
+        print(f"[question_stats] saved {len(rows)} rows to {stats_path}")
+
+    append_question_retrieval_skill_stats_csv()
+
+    def save_probing_hard_cases_csv():
+        if retr_method != 'probing':
+            return
+        save_path = "result"
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)
+        model_short = model_id.split('/')[-1]
+        hard_path = args.save_probing_hard_cases_path or os.path.join(
+            save_path,
+            f"probing_hard_cases_{model_short}_{dataset_name}_{tr_or_dev}_{steps_limit}.csv",
+        )
+        used_len = min(len(df), len(pred_list), len(retr_count_list), len(acc))
+        columns = [
+            "source_index", "model_id", "dataset_name", "tr_or_dev", "max_retrieval_rounds",
+            "query", "answer", "probing_pred", "probing_pred_to_train", "probing_acc", "probing_retr_count",
+        ]
+        rows = []
+        for i in range(used_len):
+            if int(retr_count_list[i]) >= max_retrieval_rounds and int(acc[i]) == 0:
+                rows.append({
+                    "source_index": i,
+                    "model_id": model_id,
+                    "dataset_name": dataset_name,
+                    "tr_or_dev": tr_or_dev,
+                    "max_retrieval_rounds": max_retrieval_rounds,
+                    "query": df['query'].iloc[i],
+                    "answer": df['answer'].iloc[i],
+                    "probing_pred": pred_list[i],
+                    "probing_pred_to_train": pred_to_train[i] if i < len(pred_to_train) else "",
+                    "probing_acc": acc[i],
+                    "probing_retr_count": retr_count_list[i],
+                })
+        pd.DataFrame(rows, columns=columns).to_csv(hard_path, index=False)
+        print(f"[hard_cases] saved {len(rows)} probing hard cases to {hard_path}")
+
+    def save_skillrag_hard_case_trace_csv():
+        if retr_method != 'skillrag' or not args.hard_cases_path:
+            return
+        save_path = "result"
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)
+        model_short = model_id.split('/')[-1]
+        trace_path = args.save_skillrag_hard_case_trace_path or os.path.join(
+            save_path,
+            f"skillrag_on_probing_hard_cases_{model_short}_{dataset_name}_{tr_or_dev}_{steps_limit}.csv",
+        )
+
+        def exit_info(round_log_text):
+            try:
+                logs = json.loads(round_log_text)
+            except Exception:
+                return False, "", 0, 0
+            for item in logs:
+                if item.get("selected_skill") == EXIT_SKILL:
+                    return (
+                        True,
+                        item.get("stage", ""),
+                        int(item.get("exit_saved_rounds", 0)),
+                        int(item.get("exit_est_saved_new_tokens", 0)),
+                    )
+            return False, "", 0, 0
+
+        used_len = min(len(df), len(pred_list), len(retr_count_list), len(acc), len(skillrag_round_logs))
+        columns = [
+            "source_index", "model_id", "dataset_name", "tr_or_dev", "source_hard_cases_path",
+            "query", "answer", "skillrag_pred", "skillrag_pred_to_train", "skillrag_acc",
+            "skillrag_retr_count", "exit_skill", "selected_exit_skill", "exit_stage", "exit_saved_rounds",
+            "exit_est_saved_new_tokens", "round_logs",
+        ]
+        rows = []
+        for i in range(used_len):
+            selected_exit, exit_stage, exit_saved_rounds, exit_est_saved_new_tokens = exit_info(skillrag_round_logs[i])
+            rows.append({
+                "source_index": i,
+                "model_id": model_id,
+                "dataset_name": dataset_name,
+                "tr_or_dev": tr_or_dev,
+                "source_hard_cases_path": args.hard_cases_path,
+                "query": df['query'].iloc[i],
+                "answer": df['answer'].iloc[i],
+                "skillrag_pred": pred_list[i],
+                "skillrag_pred_to_train": pred_to_train[i] if i < len(pred_to_train) else "",
+                "skillrag_acc": acc[i],
+                "skillrag_retr_count": retr_count_list[i],
+                "exit_skill": EXIT_SKILL,
+                "selected_exit_skill": selected_exit,
+                "exit_stage": exit_stage,
+                "exit_saved_rounds": exit_saved_rounds,
+                "exit_est_saved_new_tokens": exit_est_saved_new_tokens,
+                "round_logs": skillrag_round_logs[i],
+            })
+        pd.DataFrame(rows, columns=columns).to_csv(trace_path, index=False)
+        print(f"[hard_cases] saved {len(rows)} skillrag hard-case traces to {trace_path}")
+
+    save_probing_hard_cases_csv()
+    save_skillrag_hard_case_trace_csv()
+
     def _row_em(pred_text, gold_answer):
         if isinstance(gold_answer, str):
             try:
@@ -877,7 +1110,7 @@ def main(args):
             _row_em(pred_to_train[i], df['answer'].iloc[i])
             for i in range(used_len)
         ]
-        question_with_prompt = [prompt_function_data(q) for q in df['query'][:used_len]]
+        question_with_prompt = [prepare_prompt(prompt_function_data(q)) for q in df['query'][:used_len]]
         dfdf = pd.DataFrame({
             'retr_method': [retr_method] * used_len,
             'question_with_prompt': question_with_prompt,
@@ -946,6 +1179,19 @@ def main(args):
         dfdf_acc = pd.DataFrame([str(acc)])
         summary_df = pd.concat([summary_df, dfdf_acc], axis=1)
         summary_df.columns = ['retr_method', 'time', 'acc', 'em', 'f1', 'acc.1']
+        if retr_method == 'skillrag':
+            total_skill_router_calls = sum(skill_router_counts.get(skill_name, 0) for skill_name in SKILL_NAMES)
+            summary_df['total_skill_router_calls'] = total_skill_router_calls
+            summary_df['exit_skill'] = EXIT_SKILL
+            summary_df['exit_saved_rounds'] = skillrag_exit_saved_rounds
+            summary_df['exit_est_saved_new_tokens'] = skillrag_exit_est_saved_new_tokens
+            for skill_name in SKILL_NAMES:
+                summary_df[f'{skill_name}_count'] = skill_router_counts.get(skill_name, 0)
+            for skill_name in SKILL_NAMES:
+                summary_df[f'{skill_name}_ratio'] = (
+                    skill_router_counts.get(skill_name, 0) / total_skill_router_calls
+                    if total_skill_router_calls else 0
+                )
 
     save_path = "result"
     if not os.path.exists(save_path):
@@ -970,8 +1216,15 @@ if __name__ =='__main__':
     parser.add_argument('--ablation', type=int, default=0) # 0-> 0 이후 모든 값 더하기
     parser.add_argument('--threshold', type=float, default=0.0)
     parser.add_argument('--steps_limit', type=int, default=10000) # 1500 - 3 
+    parser.add_argument('--max_new_tokens', type=int, default=0)
     parser.add_argument('--max_retrieval_rounds', type=int, default=3)
     parser.add_argument('--prober_train_dataset', type=str, default='nq')
+    parser.add_argument('--hard_cases_path', type=str, default='')
+    parser.add_argument('--save_probing_hard_cases_path', type=str, default='')
+    parser.add_argument('--save_skillrag_hard_case_trace_path', type=str, default='')
+    parser.add_argument('--save_question_stats_path', type=str, default='')
+    parser.add_argument('--attn_implementation', type=str, default='flash_attention_2')
+    parser.add_argument('--dtype', type=str, default='bfloat16')
     
     parser.add_argument('--is_sparse', action='store_true')
     parser.add_argument('--is_cot', action='store_true')

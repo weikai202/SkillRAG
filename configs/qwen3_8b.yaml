@@ -1,6 +1,10 @@
 model:
   id: Qwen/Qwen3-8B
 
+attention:
+  attn_implementation: flash_attention_2
+  dtype: bfloat16
+
 index_datasets: [nq, musique, hotpotqa, trivia, 2wikimultihopqa]
 
 retrieval:
@@ -21,7 +25,11 @@ train:
   layers: [12, 16, 20, 24, 28, 32]
   device: cuda:0
   train_ds_ratio: 1.0
+  max_length: 2048
   disable_wandb: true
+
+generation:
+  max_new_tokens: 512
 
 prober:
   ds: 3

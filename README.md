@@ -27,6 +27,20 @@ ls raw_data/nq/biencoder-nq-train.json
 ls raw_data/nq/biencoder-nq-dev.json
 ```
 
+## Project Structure
+- `configs/*.yaml`: experiment presets. Each file defines the model, index datasets, retrieval mode, prober training layers, and evaluation methods.
+- `run_pipeline.py`: end-to-end orchestrator for index building, prober data construction, balancing, prober training, checkpoint checks, evaluation, and report writing.
+- `make_indexer.py`: builds sparse BM25 indexes or dense FAISS indexes from `raw_data/*`.
+- `exp_rag.py`: main RAG runner. It supports `none`, `simple`, `probing`, and `skillrag`, and writes both per-sample traces and aggregate metrics.
+- `balance_train_dataset.py`: balances generated prober training data by the `acc` label.
+- `train.py`: trains hidden-state probers for the configured model layers.
+- `check_prober_ckpt.py`: verifies that expected prober checkpoints exist before evaluation.
+- `collect_build_metrics.py`: collects generated train/dev metrics for the pipeline report.
+- `prompts.py`: stores QA, CoT, retrieval, diagnosis, routing, and skill prompts.
+- `utils.py`: shared prober, retrieval, preprocessing, and evaluation utilities.
+- `baseline/`: baseline implementations and saved baseline result summaries.
+- `metrics/`: EM/F1 metric implementations.
+
 ## Quick Start
 Minimal reproducible workflow:
 
@@ -64,6 +78,27 @@ Current config behavior:
 - Evaluate `none/simple/probing/skillrag` on 5 datasets
 - `wandb` disabled in training by default (`--disable_wandb`)
 
+Experiment stages in `run_pipeline.py`:
+1. Build sparse indexes with `make_indexer.py` for `index_datasets`.
+2. Generate prober construction data by running `exp_rag.py` with `simple` and `none` on train/dev splits for `build_dataset.datasets`.
+3. Merge `simple` and `none` outputs inside `exp_rag.py` to produce `all_train_in3_` and `all_zeroshot_test_500` files.
+4. Balance the training split with `balance_train_dataset.py`.
+5. Train layer-wise hidden-state probers with `train.py`.
+6. Check expected checkpoints with `check_prober_ckpt.py`.
+7. Evaluate configured methods on `evaluate.datasets`.
+8. Save a YAML run report under `reports/`.
+
+Default experiment settings in `configs/gemma2_9b.yaml`:
+- Model: `google/gemma-2-9b-it`
+- Retrieval: sparse BM25 with CoT prompting
+- Prober method: `tokens_mean`
+- Prober layers: `12, 16, 20, 24, 28, 32, 36, 40`
+- Training epochs: `2`
+- Train/dev construction size: `3000` train samples and `500` dev samples per build dataset
+- Evaluation size: `500` dev samples per evaluation dataset
+- SkillRAG max retrieval rounds: `3`
+- Prober decision threshold: `0.0`
+
 Prober checkpoint selection during evaluation:
 - For `nq/hotpotqa/trivia`: pass `--prober_train_dataset` as the same dataset
 - For `musique/2wikimultihopqa`: no `--prober_train_dataset` argument (default fallback to `nq`)
@@ -74,4 +109,8 @@ Main outputs:
 - Aggregated eval metrics csv: `result/*.csv`
 - Run report yaml: `reports/*.yaml`
 - Appended metrics log: `result/metrics_log.yaml`
+
+SkillRAG-specific traces:
+- `initial_output`: the answer generated before corrective retrieval.
+- `round_logs`: JSON text with each retrieval round's prober scores, selected skill, diagnosis, search query, retrieved evidence, and stopping decision.
 
