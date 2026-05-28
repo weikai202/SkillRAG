@@ -669,7 +669,7 @@ class BasicGenerator:
             print(f"[attention] {attn_implementation} unavailable ({exc}); retrying without flash attention.")
             self.model = AutoModelForCausalLM.from_pretrained(model_name_or_path, **model_kwargs)
         if self.model_config.model_type == "llama":
-            self.space_token = "▁"
+            self.space_token = "\u2581"
         else:
             self.space_token = self.tokenizer.tokenize(' ')[0]
         

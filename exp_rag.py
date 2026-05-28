@@ -19,7 +19,6 @@ from transformers import AutoTokenizer, AutoModelForCausalLM,AutoModelForSeq2Seq
 from transformers import StoppingCriteria, StoppingCriteriaList
 
 from transformer_lens import HookedTransformer
-from transformer_lens.HookedTransformerConfig import HookedTransformerConfig
 from transformer_lens.past_key_value_caching import HookedTransformerKeyValueCache
 import transformer_lens.utils as utils
 from transformer_lens.utilities import devices
@@ -46,7 +45,7 @@ SUPPORTED_PROBER_MODELS = ['google/gemma-2b', 'meta-llama/Meta-Llama-3-8B-Instru
 class CustomHookedTransformer(HookedTransformer):
     def __init__(
         self,
-        cfg: Union[HookedTransformerConfig, Dict],
+        cfg: Union[object, Dict],
         tokenizer: Optional[PreTrainedTokenizerBase] = None,
         move_to_device: bool = True,
         default_padding_side: Literal["left", "right"] = "right",
