@@ -1,6 +1,6 @@
 # Gemma-2-9B SkillRAG Runbook
 
-This runbook is for running SkillRAG with `google/gemma-2-9b-it` using sparse retrieval, CoT prompting, hidden-state prober training, SkillRAG evaluation, and FlashAttention when the local CUDA environment supports it.
+This runbook is for running SkillRAG with `google/gemma-2-9b-it` using sparse retrieval, CoT prompting, hidden-state prober training, and SkillRAG evaluation. FlashAttention is optional.
 
 ## 1. Repository Entry Points
 
@@ -18,7 +18,7 @@ Main files:
 - `train.py`: layer-wise prober training.
 - `make_indexer.py`: sparse BM25 or dense FAISS index construction.
 - `prompts.py`: CoT, retrieval, router, and skill prompts.
-- `utils.py`: shared model loading, FlashAttention fallback, Qwen/Gemma prompt formatting, prober utilities, and metrics helpers.
+- `utils.py`: shared model loading, attention backend selection, Qwen/Gemma prompt formatting, prober utilities, and metrics helpers.
 
 Important output directories:
 
@@ -54,17 +54,17 @@ PY
 
 Gemma-2-9B should be run on a GPU with enough memory for model loading plus generation/prober caching. The current config assumes `cuda:0`.
 
-## 3. FlashAttention Installation
+## 3. Attention Backend
 
-The code now attempts to load models with:
+The default config uses the standard attention backend and does not require FlashAttention:
 
 ```yaml
 attention:
-  attn_implementation: flash_attention_2
+  attn_implementation: default
   dtype: bfloat16
 ```
 
-This is already present in `configs/gemma2_9b.yaml`. If FlashAttention is unavailable, the loader prints a fallback warning and retries with the default attention backend.
+To enable FlashAttention later, set `attn_implementation: flash_attention_2` and install `flash-attn`.
 
 Install build helpers:
 
@@ -111,7 +111,7 @@ Fallback log when unsupported:
 [attention] flash_attention_2 unavailable (...); retrying without flash attention.
 ```
 
-To disable FlashAttention for debugging, either edit the config:
+To keep FlashAttention disabled, use:
 
 ```yaml
 attention:
@@ -187,7 +187,7 @@ model:
   id: google/gemma-2-9b-it
 
 attention:
-  attn_implementation: flash_attention_2
+  attn_implementation: default
   dtype: bfloat16
 
 index_datasets: [nq, musique, hotpotqa, trivia, 2wikimultihopqa]
@@ -257,7 +257,7 @@ python exp_rag.py \
   --is_cot \
   --sep_number 0 \
   --model_id google/gemma-2-9b-it \
-  --attn_implementation flash_attention_2 \
+  --attn_implementation default \
   --dtype bfloat16
 
 python exp_rag.py \
@@ -271,7 +271,7 @@ python exp_rag.py \
   --is_cot \
   --sep_number 0 \
   --model_id google/gemma-2-9b-it \
-  --attn_implementation flash_attention_2 \
+  --attn_implementation default \
   --dtype bfloat16
 ```
 
@@ -296,7 +296,7 @@ python train.py \
   --model_id google/gemma-2-9b-it \
   --dataset_name nq \
   --train_ds_ratio 1.0 \
-  --attn_implementation flash_attention_2 \
+  --attn_implementation default \
   --dtype bfloat16 \
   --disable_wandb
 ```
@@ -320,7 +320,7 @@ python exp_rag.py \
   --extract_sep \
   --sep_number 0 \
   --prober_train_dataset nq \
-  --attn_implementation flash_attention_2 \
+  --attn_implementation default \
   --dtype bfloat16
 ```
 

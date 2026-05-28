@@ -17,7 +17,7 @@ criterion_ce = nn.CrossEntropyLoss()
 criterion_bce = nn.BCELoss()
 
 QWEN_NO_THINK_PREFIX = "/no_think\n"
-DEFAULT_ATTN_IMPLEMENTATION = os.environ.get("SKILLRAG_ATTN_IMPLEMENTATION", "flash_attention_2")
+DEFAULT_ATTN_IMPLEMENTATION = os.environ.get("SKILLRAG_ATTN_IMPLEMENTATION", "default")
 DEFAULT_MODEL_DTYPE = os.environ.get("SKILLRAG_MODEL_DTYPE", "bfloat16")
 
 

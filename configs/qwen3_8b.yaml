@@ -2,7 +2,7 @@ model:
   id: Qwen/Qwen3-8B
 
 attention:
-  attn_implementation: flash_attention_2
+  attn_implementation: default
   dtype: bfloat16
 
 index_datasets: [nq, musique, hotpotqa, trivia, 2wikimultihopqa]

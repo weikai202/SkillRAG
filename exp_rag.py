@@ -1222,7 +1222,7 @@ if __name__ =='__main__':
     parser.add_argument('--save_probing_hard_cases_path', type=str, default='')
     parser.add_argument('--save_skillrag_hard_case_trace_path', type=str, default='')
     parser.add_argument('--save_question_stats_path', type=str, default='')
-    parser.add_argument('--attn_implementation', type=str, default='flash_attention_2')
+    parser.add_argument('--attn_implementation', type=str, default='default')
     parser.add_argument('--dtype', type=str, default='bfloat16')
     
     parser.add_argument('--is_sparse', action='store_true')

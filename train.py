@@ -498,7 +498,7 @@ if __name__ == '__main__':
     parser.add_argument('--max_length', type=int, default=0)
     parser.add_argument('--debug_dump_path', type=str, default='')
     parser.add_argument('--debug_dump_limit', type=int, default=10)
-    parser.add_argument('--attn_implementation', type=str, default='flash_attention_2')
+    parser.add_argument('--attn_implementation', type=str, default='default')
     parser.add_argument('--dtype', type=str, default='bfloat16')
     parser.add_argument('--disable_wandb', action='store_true')
     args = parser.parse_args()

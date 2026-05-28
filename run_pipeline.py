@@ -245,7 +245,7 @@ def main() -> None:
     max_new_tokens = int(cfg.get("generation", {}).get("max_new_tokens", 0) or 0)
     train_max_length = int(cfg["train"].get("max_length", 0) or 0)
     attention_cfg = cfg.get("attention", {})
-    attn_implementation = attention_cfg.get("attn_implementation", "flash_attention_2")
+    attn_implementation = attention_cfg.get("attn_implementation", "default")
     model_dtype = attention_cfg.get("dtype", "bfloat16")
     attention_args = [
         "--attn_implementation",
