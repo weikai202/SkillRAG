@@ -19,9 +19,20 @@ from transformers import AutoTokenizer, AutoModelForCausalLM,AutoModelForSeq2Seq
 from transformers import StoppingCriteria, StoppingCriteriaList
 
 from transformer_lens import HookedTransformer
-from transformer_lens.past_key_value_caching import HookedTransformerKeyValueCache
 import transformer_lens.utils as utils
-from transformer_lens.utilities import devices
+try:
+    from transformer_lens.past_key_value_caching import HookedTransformerKeyValueCache
+except ImportError:
+    HookedTransformerKeyValueCache = None
+try:
+    from transformer_lens.utilities import devices
+except ImportError:
+    class _DeviceFallback:
+        @staticmethod
+        def get_device_for_block_index(_block_index, cfg):
+            return getattr(cfg, "device", None) or "cpu"
+
+    devices = _DeviceFallback()
 
 import torch
 from torch.utils.data import DataLoader, Dataset
@@ -95,11 +106,12 @@ class CustomHookedTransformer(HookedTransformer):
             batch_size, ctx_length = tokens.shape
             device = devices.get_device_for_block_index(0, self.cfg)
             tokens = tokens.to(device)
-            if use_past_kv_cache:
+            if use_past_kv_cache and HookedTransformerKeyValueCache is not None:
                 past_kv_cache = HookedTransformerKeyValueCache.init_cache(
                     self.cfg, self.cfg.device, batch_size
                 )
             else:
+                use_past_kv_cache = False
                 past_kv_cache = None
 
             stop_tokens: List[int] = []
